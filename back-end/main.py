@@ -5,17 +5,6 @@ import json
 
 app = FastAPI()
 
-class InsightRequest(BaseModel):
-    domain: str
-    role_context: str
-
-@app.post("/insights")
-def getLatestInsight(data: InsightRequest):
-    domain = data.domain
-    role_context = data.role_context
-
-    return {"insight":f"Insight for domain: {domain} and role_context: {role_context}"}
-
 class SalesSimulation(BaseModel):
     domain: Literal["sales"]
     role_context: str
