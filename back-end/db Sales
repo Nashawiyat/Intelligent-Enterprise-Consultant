@@ -19,26 +19,29 @@ CREATE TABLE Customers (
 );
 
 CREATE TABLE Products (
+  -- product details
   productID INTEGER PRIMARY KEY AUTOINCREMENT,
   productName TEXT NOT NULL,
   currentProductVersion INTEGER NOT NULL,
   price DECIMAL(10, 2) NOT NULL,
+  -- foreign key linkup to customer
   customerID INTEGER,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (customerID) REFERENCES Customers(customerID) ON DELETE RESTRICT
+  --
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 );
 
 CREATE TABLE PriceHistory (
-
-    phistoryd SERIAL PRIMARY KEY,
-    product_id INT NOT NULL,
-    old_price DECIMAL(10, 2) NOT NULL,
-    change_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
-    CONSTRAINT fk_prod_history 
-        FOREIGN KEY (product_id) 
-        REFERENCES products(product_id) 
-        ON DELETE CASCADE
+-- history details
+  productHistoryID INTEGER PRIMARY KEY AUTOINCREMENT,
+  productID INTEGER NOT NULL,
+  oldPrice DECIMAL(10, 2) NOT NULL,
+  startDate DATETIME NOT NULL,
+  endDate DATETIME,  - can be the current one
+-- links to product
+  FOREIGN KEY (productID) REFERENCES Products(productID) ON DELETE RESTRICT
+-- 
+  changeDate TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 );
 
 
