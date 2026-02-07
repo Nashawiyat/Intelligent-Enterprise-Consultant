@@ -1,0 +1,25 @@
+-- Track potential customers before they buy
+CREATE TABLE Leads (
+  leadID INTEGER PRIMARY KEY AUTOINCREMENT,
+  customerID INTEGER,        -- pointer to Customer
+  companyName TEXT NOT NULL,
+  contactName TEXT NOT NULL,
+  email TEXT,
+  estimatedValue DECIMAL(10, 2),
+  -- Pipeline stages
+  status TEXT CHECK(status IN ('New', 'Contacted', 'Qualified', 'Negotiation', 'Lost', 'Customer')) DEFAULT 'New',
+
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Track phone call, email, or meeting
+CREATE TABLE Interactions (
+  interactionID INTEGER PRIMARY KEY AUTOINCREMENT,
+  leadID INTEGER,     -- link to a Lead
+  type TEXT CHECK(type IN ('Call', 'Email', 'Meeting', 'Note')),
+  summary TEXT NOT NULL,
+  followUpDate DATETIME,
+
+  FOREIGN KEY (leadID) REFERENCES Leads(leadID),
+  interactionDate DATETIME DEFAULT CURRENT_TIMESTAMP,
+);
