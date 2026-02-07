@@ -5,6 +5,11 @@ class InsightRequest(BaseModel):
     domain: str
     role_context: str
 
+class PromptRequest(BaseModel):
+    domain: str
+    role_context: str
+    prompt: str
+
 class SalesSimulation(BaseModel):
     domain: Literal["sales"]
     role_context: str

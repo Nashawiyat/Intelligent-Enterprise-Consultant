@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 import json
 import asyncio
 
-from helper_classes import InsightRequest, SimulationRequest
+from helper_classes import PromptRequest, InsightRequest, SimulationRequest
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -38,6 +38,7 @@ async def retrieveUpdatedInsights():
     while True:
         # TODO: retrieve latest insights from LangGraph
         # and store in database
+        print("TODO: retrieveUpdatedInsights") # Testing that asynchronous calling works
         await asyncio.sleep(60)
 
 # Function to get latest row from insights table in the database 
@@ -52,3 +53,8 @@ def getInsights(data: InsightRequest):
     role_context = data.role_context
 
     return getLatestInsights(domain, role_context)
+
+# TODO: Connect to LangGraph
+@app.post("/prompt")
+def getPrompt(data: PromptRequest):
+    return {"prompt": data.prompt, "response":"TODO"}
