@@ -1,0 +1,46 @@
+{
+  "insight_id": "INC-2026-0042",
+  "timestamp": "2026-02-07T12:00:00Z",
+  "meta": {
+    "confidence_score": 0.88,
+    "urgency_score": 0.92,
+    "domain": "Finance/Operations",
+    "role_context": "CEO"
+  },
+  "content": {
+    "headline": "Predicted 5% Margin Compression in APAC",
+    "summary": "Revenue in APAC is trending downward despite stable lead volume. Triangulation suggests operational friction is the primary driver.",
+    "reasoning_detailed": "Analysis of the 'ops_health' table shows a 300ms latency spike in the checkout API. This correlates with a 12% drop in 'conversion_rate' in the CRM table. Cross-referencing with 'competitor_prices' reveals that Competitor X launched a 'Fast-Checkout' guarantee yesterday, compounding our customer churn.",
+    "recommendations": [
+      {
+        "action": "Immediate Ops Patch",
+        "detail": "Scale checkout microservices in the ap-southeast-1 region to reduce latency below 100ms.",
+        "expected_impact": "Recover ~\\$12,000 in daily lost revenue."
+      },
+      {
+        "action": "Loyalty Campaign",
+        "detail": "Automate a 5% discount code for users who experienced checkout errors in the last 24h.",
+        "expected_impact": "Reduce short-term churn by an estimated 15%."
+      }
+    ]
+  },
+  "reasoning_chain": [
+    {"step": 1, "agent": "SQL Specialist", "thought": "Queried finance_daily for revenue anomalies. Detected 5% dip in APAC."},
+    {"step": 2, "agent": "Ops Monitor", "thought": "Checked server_logs for APAC. Found latency spike matching revenue dip timing."},
+    {"step": 3, "agent": "Market Researcher", "thought": "Scanned external news. Found Competitor X's new pricing strategy in APAC."},
+    {"step": 4, "agent": "Nexus Orchestrator", "thought": "Synthesized findings. Latency is the bottleneck, but competitor moves make the impact worse."}
+  ],
+  "visuals": {
+    "chart_type": "line",
+    "plotly_data": {
+      "data": [
+        {"x": ["08:00", "10:00", "12:00", "14:00"], "y": [100, 95, 90, 85], "name": "Revenue", "type": "scatter"},
+        {"x": ["08:00", "10:00", "12:00", "14:00"], "y": [50, 80, 250, 310], "name": "Latency (ms)", "type": "scatter", "yaxis": "y2"}
+      ],
+      "layout": {
+        "title": "Revenue vs. System Latency",
+        "yaxis2": {"overlaying": "y", "side": "right"}
+      }
+    }
+  }
+}
