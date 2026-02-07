@@ -16,6 +16,20 @@ CREATE TABLE Creditor (
   phoneNumber TEXT NOT NULL,
   category TEXT CHECK(status IN ('supplier', 'utilities', 'services', 'government') DEFAULT 'pending',
   
+  isActive 
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE Debtors (
+  debtorID INTEGER PRIMARY KEY AUTOINCREMENT, - owed money to
+  debtorName TEXT NOT NULL,
+  ibancode TEXT,
+  totalAmount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+  -- contact details
+  contactName TEXT NOT NULL,
+  phoneNumber TEXT NOT NULL,
+  category TEXT CHECK(status IN ('supplier', 'utilities', 'services', 'government') DEFAULT 'pending',
+  
   isActive
   createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
 );
