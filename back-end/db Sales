@@ -70,13 +70,15 @@ CREATE TABLE Orders (
   quantity INTEGER NOT NULL,
   -- We store the actual price paid here (after discounts) for historical records
   finalPrice DECIMAL(10, 2) NOT NULL,
-  profit DECIMAL(10, 2) NOT NULL,
+  profit DECIMAL(10, 2) NOT NULL,  -- production costs are retrieved from db Operation
   
   -- logistics
   deliveryDate DATETIME,
   status TEXT CHECK(status IN ('pending', 'in production', 'in stock', 'delivered', 'paid')) DEFAULT 'pending',
   
   -- metadata
+  isActive BOOLEAN DEFAULT 1,
+  wasCancelled BOOLEAN DEFAULT 0,
   saleDate DATETIME DEFAULT CURRENT_TIMESTAMP,
 
   -- links
