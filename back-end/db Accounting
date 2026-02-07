@@ -6,23 +6,33 @@ CREATE TABLE BankAccounts (
   createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE Creditor (
+  creditorID INTEGER PRIMARY KEY AUTOINCREMENT, - owed money to
+  creditorName TEXT NOT NULL,
+  ibancode TEXT,
+  totalAmount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+  -- contact details
+  contactName TEXT NOT NULL,
+  phoneNumber TEXT NOT NULL,
+  category TEXT CHECK(status IN ('supplier', 'utilities', 'services', 'government') DEFAULT 'pending',
+  
+  isActive
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE Transactions (
   transactionID INTEGER PRIMARY KEY AUTOINCREMENT,
   accountID INTEGER NOT NULL,
   amount DECIMAL(15, 2) NOT NULL,
   supplierID INT,   -- as these are in another database, no foreign key can be implemented
-  customerID INT,
+  creditorID INT,
   transactionType TEXT,
   description TEXT,
-
+  status TEXT CHECK(status IN ('pending', 'completed') DEFAULT 'pending',
   -- 
-  FOREIGN KEY (accountID) REFERENCES BankAccounts(accountID)
+  FOREIGN KEY (accountID) REFERENCES BankAccounts(accountID),
+  FOREIGN KEY (creditorID) REFERENCES Creditor(creditorID),
+  FOREIGN KEY (debtorID) REFERENCES Debtor(debtorID),
 
-  transactionDate DATETIME DEFAULT CURRENT_TIMESTAMP,
-);
-
-CREATE TABLE Creditors (
-  creditorID INTEGER PRIMARY KEY AUTOINCREMENT, - owed money to
-  
-  
+  transactionDate DATETIME DEFAULT CURRENT_TIMESTAMP
 );
