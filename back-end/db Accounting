@@ -16,7 +16,7 @@ CREATE TABLE Creditor (
   phoneNumber TEXT NOT NULL,
   category TEXT CHECK(status IN ('supplier', 'utilities', 'services', 'government') DEFAULT 'pending',
   
-  isActive 
+  isActive BOOLEAN DEFAULT 1, 
   createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -28,9 +28,9 @@ CREATE TABLE Debtors (
   -- contact details
   contactName TEXT NOT NULL,
   phoneNumber TEXT NOT NULL,
-  category TEXT CHECK(status IN ('supplier', 'utilities', 'services', 'government') DEFAULT 'pending',
+  category TEXT CHECK(status IN ('B2C customer', 'B2B customer', 'government', 'affiliates') DEFAULT 'pending',
   
-  isActive
+  isActive BOOLEAN DEFAULT 1,
   createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
