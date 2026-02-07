@@ -25,6 +25,7 @@ CREATE TABLE Products (
   productName TEXT NOT NULL,
   currentProductVersion INTEGER NOT NULL,
   price DECIMAL(10, 2) NOT NULL,
+  costPerUnit DECIMAL(10, 2) NOT NULL,
   
   -- foreign key linkup to customer
   customerID INTEGER,
@@ -67,7 +68,8 @@ CREATE TABLE Sales (
   -- transactional data
   quantity INTEGER NOT NULL,
   -- We store the actual price paid here (after discounts) for historical records
-  finalPrice DECIMAL(10, 2) NOT NULL, 
+  finalPrice DECIMAL(10, 2) NOT NULL,
+  profit DECIMAL(10, 2) NOT NULL,
   
   -- logistics
   deliveryDate DATETIME,
