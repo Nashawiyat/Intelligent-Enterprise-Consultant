@@ -1,19 +1,55 @@
--- first try
 CREATE TABLE Customers (
-  --customer details
-  customerID INT PRIMARY KEY AUTO_INCREMENT,
-  companyName VARCHAR(100) NOT NULL,
-  streetAddress VARCHAR(255) NOT NULL,
-  postcode VARCHAR(255) NOT NULL,
-  city VARCHAR(255) NOT NULL,
-  state VARCHAR(255) NOT NULL,
-  country VARCHAR(30) NOT NULL,
-  
--- contact person
-  firstName VARCHAR(50) NOT NULL,
-  lastName VARCHAR(50) NOT NULL,
-  email VARCHAR(100) UNIQUE NOT NULL,
-  telephone VARCHAR(25) NOT NULL,
+  -- customer details
+  customerID INTEGER PRIMARY KEY AUTOINCREMENT,
+  companyName TEXT NOT NULL,
+  streetAddress TEXT NOT NULL,
+  postcode TEXT NOT NULL,
+  city TEXT NOT NULL,
+  state TEXT NOT NULL,
+  country TEXT NOT NULL,
+  - contact person
+  firstName TEXT NOT NULL,
+  lastName TEXT NOT NULL,
+  email TEXT UNIQUE NOT NULL,
+  telephone TEXT NOT NULL,
+  -- is company still customer
+  isActive BOOLEAN DEFAULT TRUE,
+  -- 
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+CREATE TABLE Products (
+  productID INTEGER PRIMARY KEY AUTOINCREMENT,
+  productName TEXT NOT NULL,
+  currentProductVersion INTEGER NOT NULL,
+  price DECIMAL(10, 2) NOT NULL,
+  customerID INTEGER,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (customerID) REFERENCES Customers(customerID) ON DELETE RESTRICT
+);
+
+CREATE TABLE PriceHistory (
+
+    phistoryd SERIAL PRIMARY KEY,
+    product_id INT NOT NULL,
+    old_price DECIMAL(10, 2) NOT NULL,
+    change_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    CONSTRAINT fk_prod_history 
+        FOREIGN KEY (product_id) 
+        REFERENCES products(product_id) 
+        ON DELETE CASCADE
+);
+
+
+CREATE TABLE quantity_discounts (
+    discount_id SERIAL PRIMARY KEY,
+    product_id INT NOT NULL,
+    min_quantity INT NOT NULL,      -- e.g., "If they buy 50..."
+    discount_price DECIMAL(10, 2),  -- e.g., "...price becomes 12.00"
+    
+    CONSTRAINT fk_prod_discount 
+        FOREIGN KEY (product_id) 
+        REFERENCES products(product_id) 
+        ON DELETE CASCADE
 );
