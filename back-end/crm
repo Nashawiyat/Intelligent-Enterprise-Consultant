@@ -17,8 +17,8 @@ CREATE TABLE Interactions (
   leadID INTEGER,     -- link to a Lead
   type TEXT CHECK(type IN ('Call', 'Email', 'Meeting', 'Note')),
   summary TEXT NOT NULL,
-  interactionDate DATETIME DEFAULT CURRENT_TIMESTAMP,
-  followUpDate DATETIME
+  followUpDate DATETIME,
 
-  
+  FOREIGN KEY (leadID) REFERENCES Leads(leadID),
+  interactionDate DATETIME DEFAULT CURRENT_TIMESTAMP,
 );
