@@ -5,3 +5,15 @@ CREATE TABLE Suppliers (
   category TEXT, -- e.g., 'Components', 'Utilities', 'Rent'
   isActive BOOLEAN DEFAULT 1
 );
+
+CREATE TABLE ComponentPurchases (
+  purchaseID INTEGER PRIMARY KEY AUTOINCREMENT,
+  supplierID INTEGER NOT NULL,
+  componentName TEXT NOT NULL,
+  unitCost DECIMAL(10, 2) NOT NULL,
+  quantity INTEGER NOT NULL,
+  totalCost DECIMAL(10, 2) NOT NULL,
+  purchaseDate DATETIME DEFAULT CURRENT_TIMESTAMP,
+  status TEXT CHECK(status IN ('ordered', 'received', 'paid')),
+  FOREIGN KEY (supplierID) REFERENCES Suppliers(supplierID)
+);
