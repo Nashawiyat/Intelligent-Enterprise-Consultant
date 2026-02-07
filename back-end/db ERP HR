@@ -1,20 +1,18 @@
 CREATE TABLE Department (
-  departmentID INTEGER PRIMARY KEY NOT NULL AUTOINCREMENT,
-  name TEXT NOT NULL,
+  departmentID INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL
 );
 
 CREATE TABLE Employee (
-  employeeID INTEGER NOT NULL AUTOINCREMENT,
+  employeeID INTEGER PRIMARY KEY AUTOINCREMENT,
   firstName TEXT NOT NULL,
   lastName TEXT NOT NULL,
   dateOfBirth DATE,
-  email TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
   phone TEXT NOT NULL,
   salary DECIMAL(9, 2) NOT NULL,
   departmentID Integer NOT NULL,
-
   isActive BOOLEAN DEFAULT 1,
-  
-  FOREIGN KEY (departmentID) REFERENCES Department(departmentID)
+  FOREIGN KEY (departmentID) REFERENCES Department(departmentID) ON DELETE RESTRICT
 );
 

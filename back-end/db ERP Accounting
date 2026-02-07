@@ -7,34 +7,31 @@ CREATE TABLE BankAccounts (
 );
 
 CREATE TABLE BankAccountsHistory (
-  logID INTEGER PRIMARY KEY NOT NULL AUTOINCREMENT,
+  logID INTEGER PRIMARY KEY AUTOINCREMENT,
   accountID INTEGER NOT NULL,
-  balance DECIMAL(15,2) NOT NULL,
-  --
-  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-
-  FOREIGN KEY (accountID) REFERENCES BankAccounts(accountID),
+  balance DECIMAL(15, 2) NOT NULL,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (accountID) REFERENCES BankAccounts(accountID)
 );
 
-CREATE TABLE Creditor (
-  creditorID INTEGER PRIMARY KEY AUTOINCREMENT, -- entity we owe money to
+CREATE TABLE Creditors (
+  creditorID INTEGER PRIMARY KEY AUTOINCREMENT,
   creditorName TEXT NOT NULL,
   ibancode TEXT,
-  totalAmount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+  totalAmount DECIMAL(15, 2) NOT NULL DEFAULT 0.00, 
   contactName TEXT NOT NULL,
   phoneNumber TEXT NOT NULL,
-  -- Fixed syntax: category column name matches the check
   category TEXT CHECK(category IN ('supplier', 'utilities', 'services', 'government')) DEFAULT 'supplier',
   isActive BOOLEAN DEFAULT 1, 
   createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE Debtors (
-  debtorID INTEGER PRIMARY KEY AUTOINCREMENT, -- entity that owes us money
-  customerID INTEGER,      -- pointer
+  debtorID INTEGER PRIMARY KEY AUTOINCREMENT,
+  customerID INTEGER, 
   debtorName TEXT NOT NULL,
   ibancode TEXT,
-  totalAmount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+  totalAmount DECIMAL(15, 2) NOT NULL DEFAULT 0.00, 
   contactName TEXT NOT NULL,
   phoneNumber TEXT NOT NULL,
   category TEXT CHECK(category IN ('B2C customer', 'B2B customer', 'government', 'affiliates')) DEFAULT 'B2C customer',
@@ -45,27 +42,27 @@ CREATE TABLE Debtors (
 CREATE TABLE Transactions (
   transactionID INTEGER PRIMARY KEY AUTOINCREMENT,
   accountID INTEGER NOT NULL,
-  amount DECIMAL(15, 2) NOT NULL,
   taxAmount DECIMAL(15, 2) NOT NULL,
   netAmount DECIMAL(15, 2) NOT NULL,
+  grossAmount DECIMAL(15, 2) NOT NULL, -- Added for reporting
   dueDATE DATETIME NOT NULL,
-  transferredAmount DECIMAL(15, 2) DEFAULT NULL,
-  openAmount DECIMAL(15, 2),
-  paidAt DATE DEFAULT NULL,    -- used to track 
+  paidAmount DECIMAL(15, 2) DEFAULT 0.00,
+  paidAt DATETIME DEFAULT NULL,
   comments TEXT,
-  
   direction TEXT CHECK(direction IN ('IN', 'OUT')) NOT NULL,
-  
-  -- Links (IDs only since external DBs don't support FKs)
   creditorID INTEGER,
   debtorID INTEGER,
-  
-  transactionType TEXT, -- e.g., 'Invoice Payment', 'Refund', 'Payroll'
-  description TEXT,
+  transactionType TEXT, 
   status TEXT CHECK(status IN ('pending', 'completed')) DEFAULT 'pending',
   transactionDate DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+  -- Enforcement: IN must have a Debtor, OUT must have a Creditor
+  CONSTRAINT direction_party_check CHECK (
+    (direction = 'IN' AND debtorID IS NOT NULL AND creditorID IS NULL) OR
+    (direction = 'OUT' AND creditorID IS NOT NULL AND debtorID IS NULL)
+  ),
   
   FOREIGN KEY (accountID) REFERENCES BankAccounts(accountID),
-  FOREIGN KEY (creditorID) REFERENCES Creditor(creditorID),
+  FOREIGN KEY (creditorID) REFERENCES Creditors(creditorID),
   FOREIGN KEY (debtorID) REFERENCES Debtors(debtorID)
 );

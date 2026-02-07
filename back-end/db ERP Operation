@@ -13,5 +13,7 @@ CREATE TABLE ProductionCost (
     startDate DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     endDate DATETIME, -- NULL means this is the current active cost
 
-    comments TEXT
+    comments TEXT,
+
+    CONSTRAINT checkCostSum CHECK (totalProductionCost = materialCost + laborCost + overheadCost)
 );
