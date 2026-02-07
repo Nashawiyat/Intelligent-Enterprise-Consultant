@@ -6,6 +6,16 @@ CREATE TABLE BankAccounts (
   createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE BankAccountsHistory (
+  logID INTEGER NOT NULL AUTO-INCREMENT,
+  accountID INTEGER NOT NULL,
+  balance DECIMAL(15,2) NOT NULL,
+  --
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+
+  FOREIGN KEY (accountID) REFERENCES BankAccounts(accountID),
+);
+
 CREATE TABLE Creditor (
   creditorID INTEGER PRIMARY KEY AUTOINCREMENT, -- entity we owe money to
   creditorName TEXT NOT NULL,
