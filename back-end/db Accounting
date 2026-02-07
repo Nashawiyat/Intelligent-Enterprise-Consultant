@@ -35,6 +35,9 @@ CREATE TABLE Transactions (
   transactionID INTEGER PRIMARY KEY AUTOINCREMENT,
   accountID INTEGER NOT NULL,
   amount DECIMAL(15, 2) NOT NULL,
+  taxAmount DECIMAL(15, 2) NOT NULL,
+  netAmount DECIMAL(15, 2) NOT NULL,
+  dueDATE DATETIME NOT NULL,
   
   direction TEXT CHECK(direction IN ('IN', 'OUT')) NOT NULL,
   
