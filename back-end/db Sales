@@ -7,15 +7,16 @@ CREATE TABLE Customers (
   city TEXT NOT NULL,
   state TEXT NOT NULL,
   country TEXT NOT NULL,
-  - contact person
+  
+  -- contact person
   firstName TEXT NOT NULL,
   lastName TEXT NOT NULL,
   email TEXT UNIQUE NOT NULL,
   telephone TEXT NOT NULL,
+  
   -- is company still customer
-  isActive BOOLEAN DEFAULT TRUE,
-  -- 
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  isActive BOOLEAN DEFAULT 1,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE Products (
@@ -24,35 +25,58 @@ CREATE TABLE Products (
   productName TEXT NOT NULL,
   currentProductVersion INTEGER NOT NULL,
   price DECIMAL(10, 2) NOT NULL,
+  
   -- foreign key linkup to customer
   customerID INTEGER,
-  FOREIGN KEY (customerID) REFERENCES Customers(customerID) ON DELETE RESTRICT
-  --
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (customerID) REFERENCES Customers(customerID) ON DELETE RESTRICT,
+
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE PriceHistory (
--- history details
+  -- history details
   productHistoryID INTEGER PRIMARY KEY AUTOINCREMENT,
   productID INTEGER NOT NULL,
   oldPrice DECIMAL(10, 2) NOT NULL,
   startDate DATETIME NOT NULL,
-  endDate DATETIME,  - can be the current one
--- links to product
-  FOREIGN KEY (productID) REFERENCES Products(productID) ON DELETE RESTRICT
--- 
-  changeDate TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  endDate DATETIME,
+  
+  -- links to product
+  FOREIGN KEY (productID) REFERENCES Products(productID) ON DELETE RESTRICT,
+  
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE QuantityDiscounts (
+  -- discount details
+  discountID INTEGER PRIMARY KEY AUTOINCREMENT,
+  productID INTEGER NOT NULL,
+  minQuantity INTEGER NOT NULL,      -- e.g., "If they buy 50..."
+  discountPrice DECIMAL(10, 2),      -- e.g., "...price becomes 12.00"
+  
+  -- links to product
+  FOREIGN KEY (productID) REFERENCES Products(productID) ON DELETE CASCADE
+);
 
-CREATE TABLE quantity_discounts (
-    discount_id SERIAL PRIMARY KEY,
-    product_id INT NOT NULL,
-    min_quantity INT NOT NULL,      -- e.g., "If they buy 50..."
-    discount_price DECIMAL(10, 2),  -- e.g., "...price becomes 12.00"
-    
-    CONSTRAINT fk_prod_discount 
-        FOREIGN KEY (product_id) 
-        REFERENCES products(product_id) 
-        ON DELETE CASCADE
+CREATE TABLE Sales (
+  -- sale details
+  saleID INTEGER PRIMARY KEY AUTOINCREMENT,
+  productID INTEGER NOT NULL,
+  customerID INTEGER NOT NULL,
+  
+  -- transactional data
+  quantity INTEGER NOT NULL,
+  -- We store the actual price paid here (after discounts) for historical records
+  finalPrice DECIMAL(10, 2) NOT NULL, 
+  
+  -- logistics
+  deliveryDate DATETIME,
+  status TEXT CHECK(status IN ('pending', 'in production', 'in stock', 'delivered', 'paid')) DEFAULT 'pending',
+  
+  -- metadata
+  saleDate DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+  -- links
+  FOREIGN KEY (productID) REFERENCES Products(productID) ON DELETE RESTRICT,
+  FOREIGN KEY (customerID) REFERENCES Customers(customerID) ON DELETE RESTRICT
 );
