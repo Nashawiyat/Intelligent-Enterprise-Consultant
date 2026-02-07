@@ -21,18 +21,22 @@ CREATE TABLE Customers (
 );
 
 CREATE TABLE Products (
-  -- product details
   productID INTEGER PRIMARY KEY AUTOINCREMENT,
   productName TEXT NOT NULL,
   currentProductVersion INTEGER NOT NULL,
-  price DECIMAL(10, 2) NOT NULL,
+  standardPrice DECIMAL(10, 2) NOT NULL, -- The default MSRP
   costPerUnit DECIMAL(10, 2) NOT NULL,
-  
-  -- foreign key linkup to customer
-  customerID INTEGER,
-  FOREIGN KEY (customerID) REFERENCES Customers(customerID) ON DELETE RESTRICT,
-
   createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE CustomerPrices (
+  customerID INTEGER NOT NULL,
+  productID INTEGER NOT NULL,
+  customPrice DECIMAL(10, 2) NOT NULL,
+  
+  PRIMARY KEY (customerID, productID),
+  FOREIGN KEY (customerID) REFERENCES Customers(customerID),
+  FOREIGN KEY (productID) REFERENCES Products(productID)
 );
 
 CREATE TABLE PriceHistory (
@@ -50,38 +54,31 @@ CREATE TABLE PriceHistory (
 );
 
 CREATE TABLE QuantityDiscounts (
-  -- discount details
   discountID INTEGER PRIMARY KEY AUTOINCREMENT,
   productID INTEGER NOT NULL,
-  minQuantity INTEGER NOT NULL,      -- e.g., "If they buy 50..."
-  discountPrice DECIMAL(10, 2),      -- e.g., "...price becomes 12.00"
+  customerID INTEGER, -- Removed NOT NULL to allow for general bulk discounts
+  minQuantity INTEGER NOT NULL,
+  discountPrice DECIMAL(10, 2),
   
-  -- links to product
-  FOREIGN KEY (productID) REFERENCES Products(productID) ON DELETE CASCADE
+  FOREIGN KEY (productID) REFERENCES Products(productID) ON DELETE CASCADE,
+  FOREIGN KEY (customerID) REFERENCES Customers(customerID) ON DELETE CASCADE
 );
 
 CREATE TABLE Orders (
-  -- sale details
   orderID INTEGER PRIMARY KEY AUTOINCREMENT,
   productID INTEGER NOT NULL,
   customerID INTEGER NOT NULL,
-  
-  -- transactional data
   quantity INTEGER NOT NULL,
-  -- We store the actual price paid here (after discounts) for historical records
-  finalPrice DECIMAL(10, 2) NOT NULL,
-  profit DECIMAL(10, 2) NOT NULL,  -- production costs are retrieved from db Operation
-  
-  -- logistics
+  finalPrice DECIMAL(10, 2) NOT NULL, 
+  profit DECIMAL(15, 2) NOT NULL,
   deliveryDate DATETIME,
   status TEXT CHECK(status IN ('pending', 'in production', 'in stock', 'delivered', 'paid')) DEFAULT 'pending',
-  
-  -- metadata
+  saleDate DATETIME DEFAULT CURRENT_TIMESTAMP,
   isActive BOOLEAN DEFAULT 1,
   wasCancelled BOOLEAN DEFAULT 0,
-  saleDate DATETIME DEFAULT CURRENT_TIMESTAMP,
 
-  -- links
-  FOREIGN KEY (productID) REFERENCES Products(productID) ON DELETE RESTRICT,
-  FOREIGN KEY (customerID) REFERENCES Customers(customerID) ON DELETE RESTRICT
+  CONSTRAINT check_quantity_positive CHECK (quantity > 0), 
+
+  FOREIGN KEY (productID) REFERENCES Products(productID),
+  FOREIGN KEY (customerID) REFERENCES Customers(customerID)
 );
