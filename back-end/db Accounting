@@ -1,0 +1,45 @@
+CREATE TABLE BankAccounts (
+  accountID INTEGER PRIMARY KEY AUTOINCREMENT,
+  accountName TEXT NOT NULL,
+  ibancode TEXT,
+  currentBalance DECIMAL(15, 2) DEFAULT 0.00,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE Transactions (
+  transactionID INTEGER PRIMARY KEY AUTOINCREMENT,
+  accountID INTEGER NOT NULL,
+  amount DECIMAL(15, 2) NOT NULL,
+  supplierID INT,   -- as these are in another database, no foreign key can be implemented
+  customerID INT,
+  transactionType TEXT,
+  description TEXT,
+  -- 
+  FOREIGN KEY (accountID) REFERENCES BankAccounts(accountID)
+
+  transactionDate DATETIME DEFAULT CURRENT_TIMESTAMP,
+);
+
+
+
+CREATE TABLE ComponentPurchases (
+  purchaseID INTEGER PRIMARY KEY AUTOINCREMENT,
+  supplierID INTEGER NOT NULL,
+  componentName TEXT NOT NULL,
+  unitCost DECIMAL(10, 2) NOT NULL,
+  quantity INTEGER NOT NULL,
+  totalCost DECIMAL(10, 2) NOT NULL,
+  purchaseDate DATETIME DEFAULT CURRENT_TIMESTAMP,
+  status TEXT CHECK(status IN ('ordered', 'received', 'paid')),
+  FOREIGN KEY (supplierID) REFERENCES Suppliers(supplierID)
+);
+
+CREATE TABLE OperationalCosts (
+  costID INTEGER PRIMARY KEY AUTOINCREMENT,
+  description TEXT NOT NULL,
+  amount DECIMAL(10, 2) NOT NULL,
+  frequency TEXT CHECK(frequency IN ('one-time', 'monthly', 'yearly')),
+  dueDate DATETIME,
+  isPaid BOOLEAN DEFAULT 0,
+  category TEXT -- e.g., 'Marketing', 'Rent', 'IT'
+);
