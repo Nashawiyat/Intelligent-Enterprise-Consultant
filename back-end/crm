@@ -1,6 +1,7 @@
 -- Track potential customers before they buy
 CREATE TABLE Leads (
   leadID INTEGER PRIMARY KEY AUTOINCREMENT,
+  customerID INTEGER,        -- pointer to Customer
   companyName TEXT NOT NULL,
   contactName TEXT NOT NULL,
   email TEXT,
