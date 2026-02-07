@@ -21,6 +21,7 @@ CREATE TABLE Creditor (
 
 CREATE TABLE Debtors (
   debtorID INTEGER PRIMARY KEY AUTOINCREMENT, -- entity that owes us money
+  customerID INTEGER,      -- pointer
   debtorName TEXT NOT NULL,
   ibancode TEXT,
   totalAmount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
