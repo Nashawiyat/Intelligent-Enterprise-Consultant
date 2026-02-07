@@ -3,6 +3,9 @@ import re
 from langchain_core.tools import tool
 from typing import List, Dict, Any
 
+# TODO: Fix to actual path
+DATABASE_PATH = "/backend/database.db"
+
 @tool
 def query_enterprise_database(sql_query: str) -> str:
     """
@@ -11,7 +14,7 @@ def query_enterprise_database(sql_query: str) -> str:
     """
     try:
         # Connect to your siloed database
-        conn = sqlite3.connect("enterprise_data.db") #TODO: CHANGE PLACEHOLDER TO ACTUAL DATABASE
+        conn = sqlite3.connect(DATABASE_PATH)
         cursor = conn.cursor()
         cursor.execute(sql_query)
         rows = cursor.fetchall()
@@ -57,7 +60,7 @@ def get_database_schema() -> str:
     correct table and column names.
     """
     try:
-        conn = sqlite3.connect("enterprise_data.db")
+        conn = sqlite3.connect(DATABASE_PATH)
         cursor = conn.cursor()
         
         # Get all table names 
