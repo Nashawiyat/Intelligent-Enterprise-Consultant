@@ -39,6 +39,10 @@ CREATE TABLE Transactions (
   taxAmount DECIMAL(15, 2) NOT NULL,
   netAmount DECIMAL(15, 2) NOT NULL,
   dueDATE DATETIME NOT NULL,
+  transferredAmount DECIMAL(15, 2) DEFAULT NULL,
+  openAmount DECIMAL(15, 2),
+  paidAt DATE DEFAULT NULL,    -- used to track 
+  comments TEXT,
   
   direction TEXT CHECK(direction IN ('IN', 'OUT')) NOT NULL,
   
