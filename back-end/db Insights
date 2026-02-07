@@ -1,7 +1,6 @@
 CREATE TABLE Insights (
-  insightID INTEGER PRIMARY KEY NOT NULL AUTOINCREMENT,
+  insightID INTEGER PRIMARY KEY AUTOINCREMENT,
   json TEXT,
   domain TEXT,
   savedAt DATETIME DEFAULT CURRENT_TIMESTAMP
-  -- id, timestamp, domain(sales/hr/etc.) and json (or simply text) fields.
 );
