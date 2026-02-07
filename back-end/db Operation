@@ -1,6 +1,6 @@
 CREATE TABLE ProductionCost (
     costID INTEGER PRIMARY KEY AUTOINCREMENT,
-    productID INTEGER NOT NULL, -- Reference to db_Sales.Products
+    productID INTEGER NOT NULL, -- Reference to db Sales
     
     -- Cost breakdown
     materialCost DECIMAL(10, 2) NOT NULL,     -- sum of components
