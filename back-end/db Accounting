@@ -7,29 +7,26 @@ CREATE TABLE BankAccounts (
 );
 
 CREATE TABLE Creditor (
-  creditorID INTEGER PRIMARY KEY AUTOINCREMENT, - owed money to
+  creditorID INTEGER PRIMARY KEY AUTOINCREMENT, -- entity we owe money to
   creditorName TEXT NOT NULL,
   ibancode TEXT,
   totalAmount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
-  -- contact details
   contactName TEXT NOT NULL,
   phoneNumber TEXT NOT NULL,
-  category TEXT CHECK(status IN ('supplier', 'utilities', 'services', 'government') DEFAULT 'pending',
-  
+  -- Fixed syntax: category column name matches the check
+  category TEXT CHECK(category IN ('supplier', 'utilities', 'services', 'government')) DEFAULT 'supplier',
   isActive BOOLEAN DEFAULT 1, 
   createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE Debtors (
-  debtorID INTEGER PRIMARY KEY AUTOINCREMENT, - owed money to
+  debtorID INTEGER PRIMARY KEY AUTOINCREMENT, -- entity that owes us money
   debtorName TEXT NOT NULL,
   ibancode TEXT,
   totalAmount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
-  -- contact details
   contactName TEXT NOT NULL,
   phoneNumber TEXT NOT NULL,
-  category TEXT CHECK(status IN ('B2C customer', 'B2B customer', 'government', 'affiliates') DEFAULT 'pending',
-  
+  category TEXT CHECK(category IN ('B2C customer', 'B2B customer', 'government', 'affiliates')) DEFAULT 'B2C customer',
   isActive BOOLEAN DEFAULT 1,
   createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -38,15 +35,19 @@ CREATE TABLE Transactions (
   transactionID INTEGER PRIMARY KEY AUTOINCREMENT,
   accountID INTEGER NOT NULL,
   amount DECIMAL(15, 2) NOT NULL,
-  supplierID INT,   -- as these are in another database, no foreign key can be implemented
-  creditorID INT,
-  transactionType TEXT,
+  
+  direction TEXT CHECK(direction IN ('IN', 'OUT')) NOT NULL,
+  
+  -- Links (IDs only since external DBs don't support FKs)
+  creditorID INTEGER,
+  debtorID INTEGER,
+  
+  transactionType TEXT, -- e.g., 'Invoice Payment', 'Refund', 'Payroll'
   description TEXT,
-  status TEXT CHECK(status IN ('pending', 'completed') DEFAULT 'pending',
-  -- 
+  status TEXT CHECK(status IN ('pending', 'completed')) DEFAULT 'pending',
+  transactionDate DATETIME DEFAULT CURRENT_TIMESTAMP,
+  
   FOREIGN KEY (accountID) REFERENCES BankAccounts(accountID),
   FOREIGN KEY (creditorID) REFERENCES Creditor(creditorID),
-  FOREIGN KEY (debtorID) REFERENCES Debtor(debtorID),
-
-  transactionDate DATETIME DEFAULT CURRENT_TIMESTAMP
+  FOREIGN KEY (debtorID) REFERENCES Debtors(debtorID)
 );
