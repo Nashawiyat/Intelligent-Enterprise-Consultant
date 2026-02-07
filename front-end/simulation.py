@@ -3,40 +3,218 @@ import pandas as pd
 import numpy as np
 import altair as alt
 import random
+from theme import get_colors
 
 # ==============================================================================
-# 1. CONFIG & STYLE
+# 1. THEME COLOURS (from shared palette)
 # ==============================================================================
-st.set_page_config(layout="wide", page_title="The Sandbox")
+_c = get_colors(st.session_state.dark_mode)
+BG           = _c["BG"]
+BG2          = _c["BG2"]
+CARD         = _c["CARD"]
+CARD_INNER   = _c["CARD_INNER"]
+BORDER       = _c["BORDER"]
+BORDER_STRONG = _c["BORDER_STRONG"]
+TEXT         = _c["TEXT"]
+TEXT2        = _c["TEXT2"]
+ACCENT       = _c["ACCENT"]
+ACCENT_BG    = _c["ACCENT_BG"]
+HOVER_BG     = _c["HOVER_BG"]
+TOGGLE_BG    = _c["TOGGLE_BG"]
+TOGGLE_CHECKED = _c["TOGGLE_CHECKED"]
+PANEL_SHADOW = _c["PANEL_SHADOW"]
 
-st.markdown("""
+# Derived colours for glass effect (adapts to theme)
+if st.session_state.dark_mode:
+    GLASS_BG     = "rgba(30, 33, 48, 0.4)"
+    GLASS_BORDER = "rgba(255, 255, 255, 0.1)"
+    METRIC_BG    = "rgba(255, 255, 255, 0.05)"
+    METRIC_BORDER = "rgba(255, 255, 255, 0.05)"
+    CHART_LINE   = "#6c5ce7"
+    CHART_BASE   = "rgba(255,255,255,0.3)"
+    CHART_BAND   = "#6c5ce7"
+    TAB_ACTIVE_BG = CARD_INNER
+    SLIDER_TRACK = "#4a4a60"
+    DIVIDER_CLR  = "rgba(255,255,255,0.1)"
+else:
+    GLASS_BG     = "rgba(255, 255, 255, 0.7)"
+    GLASS_BORDER = "rgba(0, 0, 0, 0.1)"
+    METRIC_BG    = "rgba(0, 0, 0, 0.03)"
+    METRIC_BORDER = "rgba(0, 0, 0, 0.06)"
+    CHART_LINE   = "#5b4cc4"
+    CHART_BASE   = "rgba(0,0,0,0.2)"
+    CHART_BAND   = "#5b4cc4"
+    TAB_ACTIVE_BG = "#ffffff"
+    SLIDER_TRACK = "#c0c5cc"
+    DIVIDER_CLR  = "rgba(0,0,0,0.1)"
+
+# ==============================================================================
+# 2. CONFIG & STYLE
+# ==============================================================================
+st.markdown(f"""
 <style>
-    /* Main Background */
-    .stApp { background-color: #0e1117; }
-    
-    /* GLASS CARD STYLING 
-       Targets containers with border=True to give them the translucent look.
-    */
-    div[data-testid="stVerticalBlockBorderWrapper"] {
-        border: 1px solid rgba(255, 255, 255, 0.1) !important;
-        background: rgba(30, 33, 48, 0.4) !important;
+    /* Main Background – override shared theme */
+    html, body,
+    [data-testid="stAppViewContainer"],
+    [data-testid="stMain"],
+    .main, .block-container,
+    [data-testid="stAppViewBlockContainer"],
+    section[data-testid="stMain"],
+    div[data-testid="stAppViewContainer"] > section,
+    div[data-testid="stAppViewContainer"] > section > div,
+    .stApp {{ background-color: {BG} !important; color: {TEXT} !important; }}
+
+    /* === PANEL BORDERS — thick borders for visual separation === */
+    [data-testid="stVerticalBlock"].st-key-sim_graph_panel,
+    [data-testid="stVerticalBlock"].st-key-sim_analysis_panel,
+    [data-testid="stVerticalBlock"].st-key-sim_params_panel {{
+        border: 3px solid {BORDER_STRONG} !important;
+        border-radius: 16px !important;
+        background: {CARD} !important;
+        box-shadow: {PANEL_SHADOW} !important;
+        padding: 0.8rem !important;
+    }}
+
+    /* GLASS CARD STYLING (fallback for other bordered containers) */
+    div[data-testid="stVerticalBlockBorderWrapper"] {{
+        border: 1px solid {GLASS_BORDER} !important;
+        background: {GLASS_BG} !important;
         backdrop-filter: blur(10px);
         border-radius: 20px !important;
         padding: 20px !important;
-    }
-    
-    /* COMPACT METRIC CARDS 
-       Reduces padding to make the top metrics row look sleek.
-    */
-    div[data-testid="stMetric"], .stMetric { 
-        background: rgba(255, 255, 255, 0.05); 
-        padding: 8px 15px !important; 
-        border-radius: 10px; 
-        border: 1px solid rgba(255, 255, 255, 0.05);
-    }
-    
-    div[data-testid="stMetricLabel"] { font-size: 0.8rem !important; }
-    div[data-testid="stMetricValue"] { font-size: 1.5rem !important; }
+    }}
+
+    /* COMPACT METRIC CARDS */
+    div[data-testid="stMetric"], .stMetric {{
+        background: {METRIC_BG};
+        padding: 8px 15px !important;
+        border-radius: 10px;
+        border: 1px solid {METRIC_BORDER};
+    }}
+    div[data-testid="stMetricLabel"] {{ font-size: 0.8rem !important; color: {TEXT2} !important; }}
+    div[data-testid="stMetricValue"] {{ font-size: 1.5rem !important; color: {TEXT} !important; }}
+    div[data-testid="stMetricDelta"] {{ color: {TEXT2} !important; }}
+
+    /* ALL text forced to theme colour (scoped to main content, not sidebar) */
+    [data-testid="stMain"] [data-testid="stMarkdown"],
+    [data-testid="stMain"] [data-testid="stText"],
+    [data-testid="stMain"] p,
+    [data-testid="stMain"] span,
+    [data-testid="stMain"] label,
+    [data-testid="stMain"] h1,
+    [data-testid="stMain"] h2,
+    [data-testid="stMain"] h3,
+    [data-testid="stMain"] h4,
+    [data-testid="stMain"] h5,
+    [data-testid="stMain"] h6,
+    [data-testid="stMain"] li,
+    [data-testid="stMain"] td,
+    [data-testid="stMain"] th {{
+        color: {TEXT} !important;
+    }}
+
+    /* Top bar */
+    .sim-topbar {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0.3rem 0;
+        margin-bottom: 0.5rem;
+    }}
+    .sim-topbar-brand {{
+        font-size: 1.3rem;
+        font-weight: 700;
+        color: {ACCENT};
+    }}
+
+    /* Tabs */
+    [data-testid="stTabs"] button {{
+        color: {TEXT2} !important;
+        background: transparent !important;
+        border: none !important;
+        font-weight: 500 !important;
+    }}
+    [data-testid="stTabs"] button[aria-selected="true"] {{
+        color: {ACCENT} !important;
+        border-bottom: 2px solid {ACCENT} !important;
+        background: {TAB_ACTIVE_BG} !important;
+        border-radius: 8px 8px 0 0 !important;
+    }}
+
+    /* Slider label and value text */
+    [data-testid="stSlider"] label,
+    [data-testid="stSlider"] [data-testid="stWidgetLabel"] p {{
+        color: {TEXT} !important;
+    }}
+    [data-testid="stSlider"] [data-testid="stThumbValue"] {{
+        color: {TEXT} !important;
+    }}
+
+    /* Text area, inputs */
+    [data-testid="stTextArea"] textarea {{
+        background: {CARD_INNER} !important;
+        color: {TEXT} !important;
+        border-color: {BORDER} !important;
+        border-radius: 10px !important;
+    }}
+    [data-testid="stTextArea"] textarea::placeholder {{
+        color: {TEXT2} !important;
+    }}
+    [data-testid="stTextArea"] label p {{
+        color: {TEXT} !important;
+    }}
+
+    /* Buttons */
+    .stButton > button {{
+        background: {CARD} !important;
+        color: {TEXT2} !important;
+        border: 1.5px solid {BORDER} !important;
+        border-radius: 10px !important;
+        font-size: 0.85rem !important;
+        padding: 0.4rem 0.8rem !important;
+        font-weight: 500 !important;
+        transition: all 0.15s ease !important;
+    }}
+    .stButton > button:hover {{
+        background: {HOVER_BG} !important;
+        border-color: {ACCENT} !important;
+        color: {ACCENT} !important;
+    }}
+
+    /* Primary button */
+    button[data-testid="stBaseButton-primary"] {{
+        background: {ACCENT} !important;
+        color: #ffffff !important;
+        border: none !important;
+        border-radius: 12px !important;
+        font-weight: 600 !important;
+    }}
+    button[data-testid="stBaseButton-primary"]:hover {{
+        opacity: 0.85 !important;
+    }}
+
+    /* Dividers */
+    hr {{
+        border-color: {DIVIDER_CLR} !important;
+    }}
+
+    /* Success / Error boxes */
+    [data-testid="stAlert"] {{
+        border-radius: 10px !important;
+    }}
+
+    /* Caption text */
+    .stCaption, [data-testid="stCaption"] {{
+        color: {TEXT2} !important;
+    }}
+
+    /* Title and subheader */
+    .stTitle, [data-testid="stTitle"] {{
+        color: {TEXT} !important;
+    }}
+    .stSubheader {{
+        color: {TEXT} !important;
+    }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -118,7 +296,19 @@ def apply_ai_scenario():
 init_state()
 
 # ==============================================================================
-# 4. MAIN LAYOUT
+# 4. TOP BAR – Title + Dark Mode toggle (same as home page)
+# ==============================================================================
+top_left, top_spacer, top_right = st.columns([3, 5, 2])
+with top_left:
+    st.markdown(f'<div class="sim-topbar-brand">🔬 Simulation Sandbox</div>', unsafe_allow_html=True)
+with top_right:
+    toggled = st.toggle("Dark Mode", value=st.session_state.dark_mode, key="theme_toggle")
+    if toggled != st.session_state.dark_mode:
+        st.session_state.dark_mode = toggled
+        st.rerun()
+
+# ==============================================================================
+# 5. MAIN LAYOUT
 # ==============================================================================
 col_main, col_sidebar = st.columns([3, 1], gap="large")
 
@@ -126,9 +316,8 @@ col_main, col_sidebar = st.columns([3, 1], gap="large")
 with col_main:
     
     # CONTAINER A: Header & Graph
-    with st.container(border=True):
-        st.title("Simulation Sandbox")
-        st.markdown("---") 
+    with st.container(border=True, key="sim_graph_panel"):
+        st.markdown("") 
 
         # 1. Calculate Data
         p = st.session_state.sim_params
@@ -153,23 +342,31 @@ with col_main:
         base = alt.Chart(df).encode(x=alt.X('Month', sort=months))
         
         # Chart Layers
-        line_base = base.mark_line(strokeDash=[5, 5], color='rgba(255,255,255,0.3)').encode(y='Baseline')
-        line_proj = base.mark_line(color='#6c5ce7', strokeWidth=4).encode(y='Projected')
-        band = base.mark_area(opacity=0.1, color='#6c5ce7').encode(y='Lower', y2='Upper')
+        line_base = base.mark_line(strokeDash=[5, 5], color=CHART_BASE).encode(y='Baseline')
+        line_proj = base.mark_line(color=CHART_LINE, strokeWidth=4).encode(y='Projected')
+        band = base.mark_area(opacity=0.1, color=CHART_BAND).encode(y='Lower', y2='Upper')
         
         # Interactive Tooltip
         hover = alt.selection_single(fields=['Month'], nearest=True, on='mouseover', empty='none', clear='mouseout')
-        points = base.mark_circle(color='#6c5ce7', size=80).encode(
+        points = base.mark_circle(color=CHART_LINE, size=80).encode(
             y='Projected',
             opacity=alt.condition(hover, alt.value(1), alt.value(0)),
             tooltip=['Month', 'Projected', 'Baseline']
         ).add_selection(hover)
         
-        chart = (band + line_base + line_proj + points).properties(height=320).configure_view(strokeWidth=0)
+        chart = (band + line_base + line_proj + points).properties(height=320).configure_view(
+            strokeWidth=0
+        ).configure(
+            background='transparent'
+        ).configure_axis(
+            labelColor=TEXT,
+            titleColor=TEXT,
+            gridColor=BORDER
+        )
         st.altair_chart(chart, use_container_width=True)
 
     # CONTAINER B: Insights
-    with st.container(border=True):
+    with st.container(border=True, key="sim_analysis_panel"):
         st.subheader("Analysis Insight")
         if projected.mean() > baseline.mean():
             st.success(f"**Recommended Insight:** This configuration suggests a healthy surplus. A budget of {p['budget']}% is well-supported.")
@@ -178,7 +375,7 @@ with col_main:
 
 # --- RIGHT COLUMN: SIDEBAR CONTROLS ---
 with col_sidebar:
-    with st.container(border=True):
+    with st.container(border=True, key="sim_params_panel"):
         st.title("Parameters")
         
         # Tabs for organization
