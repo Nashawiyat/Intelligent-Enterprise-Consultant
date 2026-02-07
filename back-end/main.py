@@ -1,18 +1,12 @@
 from fastapi import FastAPI
-from pydantic import BaseModel, Field
-from typing import Union, Literal, Annotated, TypeAlias
+from typing import Union, TypeAlias
 import json
+
+from helper_classes import SalesSimulation
 
 app = FastAPI()
 
-class SalesSimulation(BaseModel):
-    domain: Literal["sales"]
-    role_context: str
-    price: float
-    discount_quantity: int
-    client_retention_rate: float
-    lead_inflow_volume: int
-    prompt: str | None = None
+
 
 SimulationRequest: TypeAlias = Union[SalesSimulation]
 
