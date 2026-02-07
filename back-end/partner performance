@@ -1,0 +1,22 @@
+CREATE TABLE PartnerMetrics (
+  metricID INTEGER PRIMARY KEY AUTOINCREMENT,
+  creditorID INTEGER,-- pointer
+  debtorID INTEGER,
+  partnerType TEXT CHECK(partnerType IN ('Supplier', 'Customer', 'Affiliate')),
+    
+  -- Performance KPIs
+  reliabilityScore DECIMAL(3, 2),  -- e.g., 0.95 (95% on-time)
+  avgPaymentDelay INTEGER,         -- Days past due date
+  totalVolume YTD DECIMAL(15, 2),  -- Year-to-date spend/revenue
+  
+  lastCalculated DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE PartnerEvents (
+  eventID INTEGER PRIMARY KEY AUTOINCREMENT,
+  creditorID INTEGER,-- pointer
+  debtorID INTEGER,
+  eventType TEXT, -- 'Late Delivery', 'Quality Issue', 'Early Payment'
+  severity INTEGER CHECK(severity BETWEEN 1 AND 5),
+  eventDate DATETIME DEFAULT CURRENT_TIMESTAMP
+);

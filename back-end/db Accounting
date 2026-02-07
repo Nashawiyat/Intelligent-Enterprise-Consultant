@@ -1,0 +1,57 @@
+CREATE TABLE BankAccounts (
+  accountID INTEGER PRIMARY KEY AUTOINCREMENT,
+  accountName TEXT NOT NULL,
+  ibancode TEXT,
+  currentBalance DECIMAL(15, 2) DEFAULT 0.00,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE Creditor (
+  creditorID INTEGER PRIMARY KEY AUTOINCREMENT, -- entity we owe money to
+  creditorName TEXT NOT NULL,
+  ibancode TEXT,
+  totalAmount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+  contactName TEXT NOT NULL,
+  phoneNumber TEXT NOT NULL,
+  -- Fixed syntax: category column name matches the check
+  category TEXT CHECK(category IN ('supplier', 'utilities', 'services', 'government')) DEFAULT 'supplier',
+  isActive BOOLEAN DEFAULT 1, 
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE Debtors (
+  debtorID INTEGER PRIMARY KEY AUTOINCREMENT, -- entity that owes us money
+  customerID INTEGER,      -- pointer
+  debtorName TEXT NOT NULL,
+  ibancode TEXT,
+  totalAmount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+  contactName TEXT NOT NULL,
+  phoneNumber TEXT NOT NULL,
+  category TEXT CHECK(category IN ('B2C customer', 'B2B customer', 'government', 'affiliates')) DEFAULT 'B2C customer',
+  isActive BOOLEAN DEFAULT 1,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE Transactions (
+  transactionID INTEGER PRIMARY KEY AUTOINCREMENT,
+  accountID INTEGER NOT NULL,
+  amount DECIMAL(15, 2) NOT NULL,
+  taxAmount DECIMAL(15, 2) NOT NULL,
+  netAmount DECIMAL(15, 2) NOT NULL,
+  dueDATE DATETIME NOT NULL,
+  
+  direction TEXT CHECK(direction IN ('IN', 'OUT')) NOT NULL,
+  
+  -- Links (IDs only since external DBs don't support FKs)
+  creditorID INTEGER,
+  debtorID INTEGER,
+  
+  transactionType TEXT, -- e.g., 'Invoice Payment', 'Refund', 'Payroll'
+  description TEXT,
+  status TEXT CHECK(status IN ('pending', 'completed')) DEFAULT 'pending',
+  transactionDate DATETIME DEFAULT CURRENT_TIMESTAMP,
+  
+  FOREIGN KEY (accountID) REFERENCES BankAccounts(accountID),
+  FOREIGN KEY (creditorID) REFERENCES Creditor(creditorID),
+  FOREIGN KEY (debtorID) REFERENCES Debtors(debtorID)
+);

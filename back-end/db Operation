@@ -1,0 +1,17 @@
+CREATE TABLE ProductionCost (
+    costID INTEGER PRIMARY KEY AUTOINCREMENT,
+    productID INTEGER NOT NULL,  -- pointer to Product
+    orderID INTEGER NOT NULL,    -- pointer to Order
+    
+    -- Cost breakdown
+    materialCost DECIMAL(10, 2) NOT NULL,     -- sum of components
+    laborCost DECIMAL(10, 2) NOT NULL,        -- entered manually
+    overheadCost DECIMAL(10, 2) DEFAULT 0.00, -- electricity, rent, etc.
+    totalProductionCost DECIMAL(10, 2) NOT NULL,
+    
+    -- time tracking
+    startDate DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    endDate DATETIME, -- NULL means this is the current active cost
+
+    comments TEXT
+);

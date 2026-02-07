@@ -1,0 +1,7 @@
+CREATE TABLE Insights (
+    insightID INTEGER NOT NULL AUTO-INCREMENT,
+    json TEXT,
+
+    savedAt DATETIME DEFAULT CURRENT_TIMESTAMP  
+-- id, timestamp, and json (or simply text) fields.
+);
