@@ -1,0 +1,7 @@
+CREATE TABLE Suppliers (
+  supplierID INTEGER PRIMARY KEY AUTOINCREMENT,
+  supplierName TEXT NOT NULL,
+  contactPerson TEXT,
+  category TEXT, -- e.g., 'Components', 'Utilities', 'Rent'
+  isActive BOOLEAN DEFAULT 1
+);
