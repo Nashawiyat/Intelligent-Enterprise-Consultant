@@ -32,3 +32,5 @@ def getLatestInsights(domain, role_context):
 def getInsights(data: InsightRequest):
     domain = data.domain
     role_context = data.role_context
+
+asyncio.run(retrieveSimulationResults)
