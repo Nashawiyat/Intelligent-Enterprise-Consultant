@@ -41,7 +41,7 @@ USE_BACKEND = False  # flip to True when FastAPI is live
 # Theme state
 # ──────────────────────────────────────────────
 if "dark_mode" not in st.session_state:
-    st.session_state.dark_mode = False
+    st.session_state.dark_mode = True  # default to dark mode
 
 # ──────────────────────────────────────────────
 # Theme colours
@@ -138,9 +138,9 @@ section[data-testid="stSidebar"] {{
     border-right: 3px solid {BORDER_STRONG} !important;
     border-radius: 0 16px 16px 0 !important;
     box-shadow: 3px 0 16px rgba(0,0,0,0.12) !important;
-    min-width: 58px !important;   /* ← collapsed width */
-    max-width: 58px !important;   /* ← collapsed width */
-    width: 58px !important;       /* ← collapsed width */
+    min-width: 43px !important;   /* ← collapsed width */
+    max-width: 43px !important;   /* ← collapsed width */
+    width: 43px !important;       /* ← collapsed width */
     transition: min-width 0.25s ease, max-width 0.25s ease, width 0.25s ease !important;
     overflow: hidden !important;
     z-index: 999 !important;
@@ -824,7 +824,7 @@ top_left, top_spacer, top_right = st.columns([3, 5, 2])
 with top_left:
     st.markdown(f'<div class="topbar-brand">🔬 Intelligent Consultant Agent</div>', unsafe_allow_html=True)
 with top_right:
-    toggled = st.toggle("Light / Dark", value=st.session_state.dark_mode, key="theme_toggle")
+    toggled = st.toggle("Dark Mode", value=st.session_state.dark_mode, key="theme_toggle")
     if toggled != st.session_state.dark_mode:
         st.session_state.dark_mode = toggled
         st.rerun()
