@@ -1,6 +1,7 @@
 CREATE TABLE Customers (
   -- customer details
   customerID INTEGER PRIMARY KEY AUTOINCREMENT,
+  creditorID INTEGER,        -- pointer
   companyName TEXT NOT NULL,
   streetAddress TEXT NOT NULL,
   postcode TEXT NOT NULL,
