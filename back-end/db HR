@@ -1,1 +1,20 @@
+CREATE TABLE Department (
+  departmentID INTEGER NOT NULL AUTOINCREMENT,
+  name TEXT NOT NULL,
+);
+
+CREATE TABLE Employee (
+  employeeID INTEGER NOT NULL AUTOINCREMENT,
+  firstName TEXT NOT NULL,
+  lastName TEXT NOT NULL,
+  dateOfBirth DATE,
+  email TEXT NOT NULL,
+  phone TEXT NOT NULL,
+  salary DECIMAL(9, 2) NOT NULL,
+  departmentID Integer NOT NULL,
+
+  isActive BOOLEAN DEFAULT 1,
+  
+  FOREIGN KEY (departmentID) REFERENCES Department(departmentID)
+);
 
