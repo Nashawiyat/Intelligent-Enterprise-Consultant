@@ -1,11 +1,28 @@
 from fastapi import FastAPI
-
-import asyncio
+from contextlib import asynccontextmanager
 import json
+import asyncio
 
 from helper_classes import InsightRequest, SimulationRequest
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup function
+    task = asyncio.create_task(retrieveUpdatedInsights())
+
+    # Run teh app
+    yield
+
+    # Cancel the task once the app closes
+    task.cancel()
+
+    try:
+        # Trigger it one more time to cancel it.
+        await task
+    except asyncio.CancelledError:
+        pass
+
+app = FastAPI(lifespan=lifespan)
 
 def retrieveSimulationResults(data: SimulationRequest):
     return json.dumps(data.__dict__)
@@ -16,11 +33,12 @@ def getSimulation(data: SimulationRequest):
         return retrieveSimulationResults(data=data)
 
 # Function to periodically get the latest insights from LangGraph
-# and then insert it into the database
+# every 60 seconds and then insert it into the database
 async def retrieveUpdatedInsights():
-    # TODO: retrieve latest insights from LangGraph
-    # and store in database
-    await asyncio.sleep(60)
+    while True:
+        # TODO: retrieve latest insights from LangGraph
+        # and store in database
+        await asyncio.sleep(60)
 
 # Function to get latest row from insights table in the database 
 def getLatestInsights(domain, role_context):
@@ -34,5 +52,3 @@ def getInsights(data: InsightRequest):
     role_context = data.role_context
 
     return getLatestInsights(domain, role_context)
-
-asyncio.run(retrieveSimulationResults)
