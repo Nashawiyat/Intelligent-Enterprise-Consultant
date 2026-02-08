@@ -284,13 +284,13 @@ def simulation_specialist_node(state: AgentState):
     if state.get("messages"):
         user_msg = get_message_content(state["messages"][-1])
     else:
-        user_msg = "Use simulation inputs to build a baseline query for revenue and latency trends."
+        user_msg = "Use simulation inputs to build a baseline query for the most relevant metrics."
     simulation_inputs = state.get("simulation_inputs", {})
     query_prompt = SystemMessage(
         content=(
             "Output ONLY the raw tool call for 'query_enterprise_database'. "
             "No explanation, no tags, no markdown.\n"
-            "QUERY GOAL: Retrieve time-series baseline data with explicit date ordering.\n"
+            "QUERY GOAL: Retrieve time-series baseline data for the most relevant tables and metrics.\n"
             f"SCHEMA: {schema}\n"
             f"REQUEST: {user_msg}"
         )
@@ -402,6 +402,7 @@ def reasoner_node(state: AgentState):
             "- Treat simulation_inputs as PROJECTED (what-if).\n"
             "- If a percentage change is provided, compute PROJECTED = BASELINE * (1 + change/100).\n"
             "- Compare BASELINE vs PROJECTED using the delta formula.\n"
+            "- Report findings using the SQL results; do not assume a specific metric like latency.\n"
             f"PROJECTED INPUTS: {simulation_inputs}\n"
         )
 
@@ -473,6 +474,7 @@ def reasoner_node(state: AgentState):
 
     DETECTED SILO FOCUS:
     - Use these keywords prominently: {silo_focus}
+    - Ground all findings in the SQL results; do not assume a specific metric.
 
     FINANCIAL MANDATE:
     - Explicitly mention impact on Cash Flow and Expenditure.
