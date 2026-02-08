@@ -1,12 +1,11 @@
 import sqlite3
-from datetime import datatime
 
 insights_conn = None
 cursor = None
 def init_db_insights():
     global insights_conn
     global cursor
-    insights_conn = sqlite3.connect("./db\ Insights")
+    insights_conn = sqlite3.connect("./db Insights")
     cursor = insights_conn.cursor()
 
 
@@ -22,16 +21,6 @@ def recordInsight(json: str, domain: str):
     cursor.execute("INSERT INTO Insights (json, domain) VALUES (?, ?)", data)
     insights_conn.commit()
 
-def getLatestInsightRecordFromDB():
-    result = cursor.execute("SELECT json, doman FROM Insights ORDER BY savedAt DESC LIMIT 1")
+def getLatestInsightRecordFromDB(domain: str):
+    result = cursor.execute("SELECT json FROM Insights WHERE domain = ? ORDER BY savedAt DESC LIMIT 1", domain)
     return result.fetchone()
-
-"""
-CREATE TABLE Insights (
-  insightID INTEGER PRIMARY KEY NOT NULL AUTOINCREMENT,
-  json TEXT,
-  domain TEXT,
-  savedAt DATETIME DEFAULT CURRENT_TIMESTAMP
-  -- id, timestamp, domain(sales/hr/etc.) and json (or simply text) fields.
-);
-"""
