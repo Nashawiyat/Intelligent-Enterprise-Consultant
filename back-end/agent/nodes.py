@@ -281,7 +281,10 @@ def sql_agent_node(state: AgentState):
 
 def simulation_specialist_node(state: AgentState):
     schema = get_database_schema.invoke({})
-    user_msg = get_message_content(state["messages"][-1])
+    if state.get("messages"):
+        user_msg = get_message_content(state["messages"][-1])
+    else:
+        user_msg = "Use simulation inputs to build a baseline query for revenue and latency trends."
     simulation_inputs = state.get("simulation_inputs", {})
     query_prompt = SystemMessage(
         content=(
