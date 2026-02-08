@@ -9,9 +9,11 @@ import streamlit as st
 import streamlit.components.v1 as components
 import plotly.graph_objects as go
 import requests
-import random
+import json
+import time
 from datetime import datetime
 from theme import get_colors
+from streamlit_autorefresh import st_autorefresh
 
 # ──────────────────────────────────────────────
 # Backend config
@@ -20,9 +22,12 @@ try:
     BACKEND_BASE_URL = st.secrets["BACKEND_URL"]
 except Exception:
     BACKEND_BASE_URL = "http://localhost:8000"
-INSIGHTS_ENDPOINT = f"{BACKEND_BASE_URL}/api/insights"
-CHAT_ENDPOINT = f"{BACKEND_BASE_URL}/api/chat"
-USE_BACKEND = False  # flip to True when FastAPI is live
+INSIGHTS_ENDPOINT = f"{BACKEND_BASE_URL}/insights"
+PROMPT_ENDPOINT = f"{BACKEND_BASE_URL}/prompt"
+
+# Domains and roles available (aligned with backend ALLOWED_SILOS)
+DOMAINS = ["Sales", "Operations", "HR", "Accounting", "CRM"]
+ROLES = ["CEO", "CFO", "COO", "CTO", "CMO", "CHRO", "VP Sales", "VP Engineering", "Analyst"]
 
 # ──────────────────────────────────────────────
 # Theme colours (for Python-level usage: Plotly charts, inline HTML)
@@ -325,157 +330,73 @@ if "active_insights" not in st.session_state:
     st.session_state.active_insights = []
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
+if "selected_role" not in st.session_state:
+    st.session_state.selected_role = "CEO"
+if "selected_domain" not in st.session_state:
+    st.session_state.selected_domain = "Sales"
+if "last_insight_fetch" not in st.session_state:
+    st.session_state.last_insight_fetch = 0.0
+if "insight_error" not in st.session_state:
+    st.session_state.insight_error = None
 
-# ──────────────────────────────────────────────
-# Dummy data (replaced by backend)
-# ──────────────────────────────────────────────
-DUMMY_INSIGHTS = [
-    {
-        "insight_id": "INC-2026-0042",
-        "timestamp": "2026-02-07T12:00:00Z",
-        "meta": {"confidence_score": 0.88, "urgency_score": 0.92, "domain": "Finance/Ops", "role_context": "CEO"},
-        "content": {
-            "headline": "5% Margin Compression – APAC",
-            "summary": "Revenue in APAC trending down. Checkout API latency spike is the primary driver.",
-            "recommendations": [
-                {"action": "Ops Patch", "detail": "Scale checkout in ap-southeast-1.", "expected_impact": "Recover ~$12K/day."},
-                {"action": "Loyalty Campaign", "detail": "5% discount for affected users.", "expected_impact": "Reduce churn ~15%."}
-            ]
-        },
-        "reasoning_chain": [
-            {"step": 1, "agent": "SQL Specialist", "thought": "Detected 5% revenue dip in APAC."},
-            {"step": 2, "agent": "Ops Monitor", "thought": "Found latency spike in checkout API."},
-            {"step": 3, "agent": "Market Researcher", "thought": "Competitor X launched fast-checkout."},
-            {"step": 4, "agent": "Orchestrator", "thought": "Latency + competitor = compounded churn."}
-        ],
-        "visuals": {
-            "chart_type": "line",
-            "plotly_data": {
-                "data": [
-                    {"x": ["08:00", "10:00", "12:00", "14:00"], "y": [100, 95, 90, 85], "name": "Revenue ($K)", "type": "scatter"},
-                    {"x": ["08:00", "10:00", "12:00", "14:00"], "y": [50, 80, 250, 310], "name": "Latency (ms)", "type": "scatter", "yaxis": "y2"}
-                ],
-                "layout": {"title": "Revenue vs Latency", "yaxis2": {"overlaying": "y", "side": "right"}}
-            }
-        }
-    },
-    {
-        "insight_id": "INC-2026-0043",
-        "timestamp": "2026-02-07T11:30:00Z",
-        "meta": {"confidence_score": 0.91, "urgency_score": 0.65, "domain": "Marketing", "role_context": "CMO"},
-        "content": {
-            "headline": "Email Campaign ROI +22% – EU",
-            "summary": "EU email campaign outperformed projections by 22%. Open rates and CTR at all-time highs.",
-            "recommendations": [
-                {"action": "Scale Campaign", "detail": "Extend to APAC with localised content.", "expected_impact": "+$8K weekly."},
-                {"action": "A/B Test", "detail": "Test emoji vs plain subject lines.", "expected_impact": "+5% open rate."}
-            ]
-        },
-        "reasoning_chain": [
-            {"step": 1, "agent": "CRM Analyst", "thought": "EU open rate at 38%."},
-            {"step": 2, "agent": "Revenue Tracker", "thought": "Correlated opens with conversions."}
-        ],
-        "visuals": {
-            "chart_type": "bar",
-            "plotly_data": {
-                "data": [
-                    {"x": ["Wk1", "Wk2", "Wk3", "Wk4"], "y": [12, 18, 25, 31], "name": "Conversions", "type": "bar", "marker": {"color": "#4caf50"}},
-                    {"x": ["Wk1", "Wk2", "Wk3", "Wk4"], "y": [8, 10, 14, 16], "name": "Unsubs", "type": "bar", "marker": {"color": "#ef5350"}}
-                ],
-                "layout": {"title": "Email Performance", "barmode": "group"}
-            }
-        }
-    },
-    {
-        "insight_id": "INC-2026-0044",
-        "timestamp": "2026-02-07T10:45:00Z",
-        "meta": {"confidence_score": 0.79, "urgency_score": 0.85, "domain": "Supply Chain", "role_context": "COO"},
-        "content": {
-            "headline": "Inventory Risk – SKU #4421",
-            "summary": "Stock depletes in 6 days. Supplier lead time is 10 days. Demand expected to surge 40%.",
-            "recommendations": [
-                {"action": "Emergency Reorder", "detail": "Supplier B can expedite in 3 days.", "expected_impact": "Avoid $45K lost sales."},
-                {"action": "Substitute SKU", "detail": "Offer #4422 at 5% discount.", "expected_impact": "Retain ~60% demand."}
-            ]
-        },
-        "reasoning_chain": [
-            {"step": 1, "agent": "Inventory", "thought": "6 days stock remaining."},
-            {"step": 2, "agent": "Demand Forecast", "thought": "40% demand spike predicted."},
-            {"step": 3, "agent": "Procurement", "thought": "Supplier B: 3-day expedite."}
-        ],
-        "visuals": {
-            "chart_type": "line",
-            "plotly_data": {
-                "data": [
-                    {"x": ["D1", "D2", "D3", "D4", "D5", "D6", "D7"], "y": [500, 420, 340, 260, 180, 100, 20], "name": "Stock", "type": "scatter", "fill": "tozeroy", "fillcolor": "rgba(76,175,80,0.15)", "line": {"color": "#4caf50"}},
-                    {"x": ["D1", "D2", "D3", "D4", "D5", "D6", "D7"], "y": [80, 85, 90, 100, 110, 120, 130], "name": "Demand", "type": "scatter", "line": {"color": "#ff9800", "dash": "dash"}}
-                ],
-                "layout": {"title": "Stock Depletion – SKU #4421"}
-            }
-        }
-    },
-    {
-        "insight_id": "INC-2026-0045",
-        "timestamp": "2026-02-07T09:15:00Z",
-        "meta": {"confidence_score": 0.94, "urgency_score": 0.45, "domain": "HR/People", "role_context": "CHRO"},
-        "content": {
-            "headline": "Employee Satisfaction +8%",
-            "summary": "Flexible work policy improved eNPS by 8 points. Attrition intent dropped from 18% to 11%.",
-            "recommendations": [
-                {"action": "Expand Policy", "detail": "Extend to sales and support teams.", "expected_impact": "+5% eNPS company-wide."},
-                {"action": "Case Study", "detail": "Share results internally.", "expected_impact": "Boost employer brand."}
-            ]
-        },
-        "reasoning_chain": [
-            {"step": 1, "agent": "HR Analyst", "thought": "eNPS improved 8 points."},
-            {"step": 2, "agent": "Stats Engine", "thought": "Confirmed at p<0.01."}
-        ],
-        "visuals": {
-            "chart_type": "bar",
-            "plotly_data": {
-                "data": [{"x": ["Before", "After"], "y": [62, 70], "name": "eNPS", "type": "bar", "marker": {"color": ["#90caf9", "#4caf50"]}}],
-                "layout": {"title": "Employee Net Promoter Score"}
-            }
-        }
-    }
-]
+INSIGHT_REFRESH_INTERVAL = 10  # seconds
 
-DUMMY_CHAT_RESPONSES = [
-    "The APAC region shows a 5% margin compression caused by a checkout API latency spike.",
-    "I recommend scaling checkout microservices and launching a targeted loyalty campaign.",
-    "The EU email campaign is outperforming by 22%. Consider extending to other regions.",
-    "I can pull up detailed analytics for any insight card. Which one interests you?",
-]
+# Auto-refresh the page to poll for new insights
+st_autorefresh(interval=INSIGHT_REFRESH_INTERVAL * 1000, limit=None, key="insight_autorefresh")
 
 
 # ──────────────────────────────────────────────
-# Helpers (backend-ready)
+# Helpers (backend integration)
 # ──────────────────────────────────────────────
-def fetch_insights() -> list[dict]:
-    if USE_BACKEND:
-        try:
-            resp = requests.get(INSIGHTS_ENDPOINT, timeout=5)
-            resp.raise_for_status()
-            return resp.json()
-        except Exception:
-            return DUMMY_INSIGHTS
-    return DUMMY_INSIGHTS
+def fetch_insights(domain: str, role: str) -> list[dict]:
+    """Fetch insights from backend POST /insights."""
+    try:
+        resp = requests.post(
+            INSIGHTS_ENDPOINT,
+            json={"domain": domain.lower(), "role_context": role},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        # Backend may return a single insight dict or a list
+        if isinstance(data, dict):
+            return [data]
+        elif isinstance(data, list):
+            return data
+        return []
+    except requests.exceptions.ConnectionError:
+        st.session_state.insight_error = "Backend not reachable. Start the backend server."
+        return []
+    except Exception as e:
+        st.session_state.insight_error = f"Error fetching insights: {e}"
+        return []
 
 
-def send_chat_message(message: str) -> str:
-    if USE_BACKEND:
-        try:
-            resp = requests.post(
-                CHAT_ENDPOINT,
-                json={"message": message, "session_id": st.session_state.get("session_id", "default")},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("response", data.get("reply", str(data)))
-        except Exception as e:
-            return f"Backend unavailable: {e}"
-    return random.choice(DUMMY_CHAT_RESPONSES)
+def send_chat_message(message: str, domain: str, role: str) -> str:
+    """Send a prompt to backend POST /prompt and return the response text."""
+    try:
+        resp = requests.post(
+            PROMPT_ENDPOINT,
+            json={"domain": domain.lower(), "role_context": role, "prompt": message},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        # Backend returns insight JSON; extract chat_response or summary
+        if isinstance(data, dict):
+            # Chat mode returns {"chat_response": "..."}
+            if "chat_response" in data:
+                return data["chat_response"]
+            # Report mode returns full insight JSON — extract summary
+            content = data.get("content", {})
+            if isinstance(content, dict) and content.get("summary"):
+                return content["summary"]
+            return json.dumps(data, indent=2)
+        return str(data)
+    except requests.exceptions.ConnectionError:
+        return "Backend not reachable. Please start the backend server."
+    except Exception as e:
+        return f"Error: {e}"
 
 
 def dismiss_insight(insight_id: str):
@@ -521,22 +442,43 @@ def render_plotly(visuals: dict, key: str):
 
 
 # ──────────────────────────────────────────────
-# Load insights
+# TOP BAR – ICA + Role/Domain selectors + Light/Dark toggle
 # ──────────────────────────────────────────────
-if not st.session_state.active_insights:
-    st.session_state.active_insights = fetch_insights()
-
-# ──────────────────────────────────────────────
-# TOP BAR – ICA + Light/Dark toggle
-# ──────────────────────────────────────────────
-top_left, top_spacer, top_right = st.columns([3, 5, 2])
-with top_left:
+top_brand, top_domain, top_role, top_toggle = st.columns([3, 2, 2, 2])
+with top_brand:
     st.markdown(f'<div class="topbar-brand">🔬 Intelligent Consultant Agent</div>', unsafe_allow_html=True)
-with top_right:
+with top_domain:
+    domain_idx = DOMAINS.index(st.session_state.selected_domain) if st.session_state.selected_domain in DOMAINS else 0
+    new_domain = st.selectbox("Domain", DOMAINS, index=domain_idx, key="domain_select", label_visibility="collapsed")
+    if new_domain != st.session_state.selected_domain:
+        st.session_state.selected_domain = new_domain
+        st.session_state.active_insights = []
+        st.session_state.last_insight_fetch = 0.0
+        st.rerun()
+with top_role:
+    role_idx = ROLES.index(st.session_state.selected_role) if st.session_state.selected_role in ROLES else 0
+    new_role = st.selectbox("Role", ROLES, index=role_idx, key="role_select", label_visibility="collapsed")
+    if new_role != st.session_state.selected_role:
+        st.session_state.selected_role = new_role
+        st.session_state.active_insights = []
+        st.session_state.last_insight_fetch = 0.0
+        st.rerun()
+with top_toggle:
     toggled = st.toggle("Dark Mode", value=st.session_state.dark_mode, key="theme_toggle")
     if toggled != st.session_state.dark_mode:
         st.session_state.dark_mode = toggled
         st.rerun()
+
+# ──────────────────────────────────────────────
+# Auto-refresh insights every INSIGHT_REFRESH_INTERVAL seconds
+# ──────────────────────────────────────────────
+now = time.time()
+if now - st.session_state.last_insight_fetch >= INSIGHT_REFRESH_INTERVAL:
+    st.session_state.insight_error = None
+    fresh = fetch_insights(st.session_state.selected_domain, st.session_state.selected_role)
+    if fresh:
+        st.session_state.active_insights = fresh
+    st.session_state.last_insight_fetch = now
 
 # ──────────────────────────────────────────────
 # MAIN LAYOUT: Insights (centre) + Chat (right)
@@ -548,17 +490,24 @@ with main_col:
     panel = st.container(border=True, key="insights_panel")
     with panel:
         insights = st.session_state.active_insights
+
+        # Show error banner if backend unreachable
+        if st.session_state.insight_error:
+            st.warning(st.session_state.insight_error)
+
         if not insights:
-            st.info("No active insights. Click Refresh in the sidebar.")
+            if not st.session_state.insight_error:
+                st.info(f"Fetching insights for **{st.session_state.selected_domain}** as **{st.session_state.selected_role}**…")
         else:
             scroll = st.container(height=560)
             with scroll:
+                # Backend may return a single insight — always iterate as list
                 for row_start in range(0, len(insights), 2):
                     row = insights[row_start: row_start + 2]
                     cols = st.columns(2, gap="medium")
                     for col, insight in zip(cols, row):
                         with col:
-                            card_id = insight["insight_id"]
+                            card_id = insight.get("insight_id", f"card_{row_start}")
                             card = st.container(border=False, key=f"card_{card_id}")
                             with card:
                                 meta = insight.get("meta", {})
@@ -587,11 +536,18 @@ with main_col:
                                 st.markdown(f'<h4 style="margin:0 0 0.2rem 0;font-size:0.88rem;font-weight:600;color:{TEXT} !important;">{content.get("headline", "Insight")}</h4>', unsafe_allow_html=True)
 
                                 # Chart
-                                if visuals:
+                                if visuals and visuals.get("plotly_data"):
                                     render_plotly(visuals, card_id)
 
                                 # Summary
                                 st.markdown(f'<div class="insight-summary">{content.get("summary", "")}</div>', unsafe_allow_html=True)
+
+                                # Recommendations
+                                recs = content.get("recommendations", [])
+                                if recs:
+                                    with st.expander("📋 Recommendations", expanded=False):
+                                        for rec in recs:
+                                            st.markdown(f"**{rec.get('action', '')}** – {rec.get('detail', '')}  \n*Impact: {rec.get('expected_impact', 'N/A')}*")
 
                                 # Reasoning expander (full width)
                                 chain = insight.get("reasoning_chain", [])
@@ -653,8 +609,12 @@ with chat_col:
 
         user_input = st.chat_input("Ask anything...", key="chat_input")
         if user_input:
-            now = datetime.now().strftime("%I:%M %p")
-            st.session_state.chat_history.append({"role": "user", "content": user_input, "time": now})
-            response = send_chat_message(user_input)
-            st.session_state.chat_history.append({"role": "assistant", "content": response, "time": now})
+            now_str = datetime.now().strftime("%I:%M %p")
+            st.session_state.chat_history.append({"role": "user", "content": user_input, "time": now_str})
+            response = send_chat_message(
+                user_input,
+                st.session_state.selected_domain,
+                st.session_state.selected_role,
+            )
+            st.session_state.chat_history.append({"role": "assistant", "content": response, "time": now_str})
             st.rerun()

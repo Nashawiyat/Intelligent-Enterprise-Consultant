@@ -266,6 +266,30 @@ label[data-testid="stWidgetLabel"] p {{
     color: {TEXT} !important;
 }}
 
+/* === Selectbox (dropdowns) === */
+[data-testid="stSelectbox"] > div > div {{
+    background: {BG2} !important;
+    border-color: {BORDER} !important;
+    color: {TEXT} !important;
+    border-radius: 10px !important;
+}}
+[data-testid="stSelectbox"] [data-testid="stMarkdown"] p {{
+    color: {TEXT} !important;
+}}
+[data-baseweb="select"] span {{
+    color: {TEXT} !important;
+}}
+[data-baseweb="popover"] li {{
+    background: {BG2} !important;
+    color: {TEXT} !important;
+}}
+[data-baseweb="popover"] li:hover {{
+    background: {HOVER_BG} !important;
+}}
+[data-baseweb="popover"] ul {{
+    background: {BG2} !important;
+}}
+
 /* === Hide tooltips === */
 [data-testid="stTooltipIcon"],
 [role="tooltip"],
@@ -294,10 +318,6 @@ with st.sidebar:
         st.switch_page(home_page)
     if st.button("📊   Simulation", key="nav_Simulation"):
         st.switch_page(sim_page)
-    if st.button("🔄   Refresh", key="nav_Refresh"):
-        if "active_insights" in st.session_state:
-            st.session_state.active_insights = []
-        st.switch_page(home_page)
 
     # Account button – pushed to bottom via CSS
     with st.container(key="account_section"):

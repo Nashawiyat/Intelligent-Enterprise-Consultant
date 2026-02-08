@@ -1,8 +1,7 @@
 import streamlit as st
-import pandas as pd
-import numpy as np
-import altair as alt
-import random
+import plotly.graph_objects as go
+import requests
+import json
 from theme import get_colors
 
 # ==============================================================================
@@ -219,191 +218,284 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# 2. HELPER FUNCTIONS (LOGIC LAYER)
+# 3. BACKEND CONFIG + CONSTANTS
 # ==============================================================================
+try:
+    BACKEND_BASE_URL = st.secrets["BACKEND_URL"]
+except Exception:
+    BACKEND_BASE_URL = "http://localhost:8000"
+SIMULATION_ENDPOINT = f"{BACKEND_BASE_URL}/simulation"
 
+# Domains and roles (aligned with backend ALLOWED_SILOS)
+DOMAINS = ["Sales", "Operations", "HR", "Accounting", "CRM"]
+ROLES = ["CEO", "CFO", "COO", "CTO", "CMO", "CHRO", "VP Sales", "VP Engineering", "Analyst"]
+
+# Parameters per domain (aligned with backend helper_classes.py)
+DOMAIN_PARAMS = {
+    "Sales": {
+        "price":                {"label": "Unit Price ($)",          "min": 10,   "max": 500,  "default": 85,   "format": "$%d"},
+        "discount_quantity":    {"label": "Discount Qty Threshold",  "min": 0,    "max": 1000, "default": 100,  "format": "%d units"},
+        "client_retention_rate":{"label": "Client Retention Rate",   "min": 0.0,  "max": 100.0,"default": 92.0, "format": "%.1f%%"},
+        "lead_inflow_volume":   {"label": "Lead Inflow Volume",      "min": 0,    "max": 2000, "default": 450,  "format": "%d"},
+    },
+    "Operations": {
+        "api_latency":  {"label": "API Latency (ms)",   "min": 0,    "max": 2000, "default": 120, "format": "%d ms"},
+        "failure_rate": {"label": "Failure Rate (%)",   "min": 0.0,  "max": 100.0,"default": 2.5, "format": "%.1f%%"},
+        "throughput":   {"label": "Throughput (req/s)",  "min": 0,    "max": 10000,"default": 500, "format": "%d req/s"},
+    },
+    "HR": {
+        "salary_budget":   {"label": "Salary Budget ($K)", "min": 0,   "max": 10000, "default": 2000, "format": "$%dK"},
+        "headcount_change": {"label": "Headcount Change",  "min": -50, "max": 100,   "default": 0,    "format": "%d"},
+        "attrition_rate":  {"label": "Attrition Rate (%)", "min": 0.0, "max": 50.0,  "default": 12.0, "format": "%.1f%%"},
+    },
+    "Accounting": {
+        "revenue_target":  {"label": "Revenue Target ($K)",  "min": 0,    "max": 50000, "default": 5000,  "format": "$%dK"},
+        "cost_reduction":  {"label": "Cost Reduction (%)",   "min": 0.0,  "max": 50.0,  "default": 5.0,   "format": "%.1f%%"},
+        "tax_rate":        {"label": "Effective Tax Rate (%)", "min": 0.0, "max": 50.0,  "default": 21.0,  "format": "%.1f%%"},
+    },
+    "CRM": {
+        "nps_target":      {"label": "NPS Target",           "min": -100, "max": 100,  "default": 45,   "format": "%d"},
+        "ticket_volume":   {"label": "Support Tickets/day",  "min": 0,    "max": 1000, "default": 150,  "format": "%d"},
+        "response_time":   {"label": "Avg Response Time (h)","min": 0.0,  "max": 72.0, "default": 4.0,  "format": "%.1fh"},
+    },
+}
+
+# ==============================================================================
+# 4. HELPER FUNCTIONS
+# ==============================================================================
 def init_state():
-    """Initializes the session state variables if they don't exist yet."""
-    # Default values for the sliders
-    defaults = {
-        "budget": 10, "interest": 250, "market": 2.5,  # Finance Tab
-        "price": 85, "retention": 92, "leads": 450     # Strategy Tab
+    """Initializes session state for simulation."""
+    if "sim_domain" not in st.session_state:
+        st.session_state.sim_domain = "Sales"
+    if "sim_role" not in st.session_state:
+        st.session_state.sim_role = "CEO"
+    if "sim_result" not in st.session_state:
+        st.session_state.sim_result = None
+    if "sim_error" not in st.session_state:
+        st.session_state.sim_error = None
+    if "sim_loading" not in st.session_state:
+        st.session_state.sim_loading = False
+    if "sim_prompt" not in st.session_state:
+        st.session_state.sim_prompt = ""
+
+def run_simulation_backend():
+    """Send simulation request to backend POST /simulation."""
+    domain = st.session_state.sim_domain
+    role = st.session_state.sim_role
+    params = DOMAIN_PARAMS.get(domain, {})
+
+    # Build payload: required fields + domain-specific slider values
+    payload = {
+        "domain": domain.lower(),
+        "role_context": role,
     }
-    
-    # ui_state: Controls the position of the sliders
-    if "ui_state" not in st.session_state:
-        st.session_state.ui_state = defaults.copy()
-        
-    # sim_params: Controls the data shown on the graph (only updates on 'Run')
-    if "sim_params" not in st.session_state:
-        st.session_state.sim_params = defaults.copy()
-    
-    if "ai_note" not in st.session_state:
-        st.session_state.ai_note = None
 
-def calculate_projections(params):
-    """
-    Core math engine. Takes simulation parameters and returns the data for the chart.
-    Returns: (projected_data, baseline_data, months_list)
-    """
-    months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul"]
-    x = np.arange(len(months))
-    
-    # The 'Business Logic' formula
-    impact = (params["budget"] * 12) + (params["leads"] * 0.3) - (params["interest"] * 1.2)
-    baseline = 4000 + 400 * np.sin(x * 0.8)
-    projected = baseline + impact
-    
-    return projected, baseline, months
+    # Add prompt if user provided one
+    prompt_text = st.session_state.get("sim_prompt_input", "").strip()
+    if prompt_text:
+        payload["prompt"] = prompt_text
 
-# ==============================================================================
-# 3. CALLBACKS (INTERACTION LAYER)
-# ==============================================================================
+    # Add domain-specific parameters from sliders
+    for param_key, config in params.items():
+        slider_key = f"sim_slider_{param_key}"
+        if slider_key in st.session_state:
+            payload[param_key] = st.session_state[slider_key]
 
-def run_simulation():
-    """Triggered by the 'Run Simulation' button. Updates the graph."""
-    # Copy values from sliders (keys) to the simulation parameters
-    st.session_state.sim_params = {
-        "budget": st.session_state.slider_budget,
-        "interest": st.session_state.slider_interest,
-        "market": st.session_state.slider_market,
-        "price": st.session_state.slider_price,
-        "retention": st.session_state.slider_retention,
-        "leads": st.session_state.slider_leads
-    }
-    st.toast("Projections updated.", icon="✅")
+    st.session_state.sim_loading = True
+    st.session_state.sim_error = None
 
-def apply_ai_scenario():
-    """Triggered by the 'Adjust Sliders' button. Updates UI state based on text input."""
-    query = st.session_state.get("user_query", "").lower()
-    
-    if not query:
-        st.toast("Type a scenario first.", icon="✍️")
-        return
+    try:
+        resp = requests.post(SIMULATION_ENDPOINT, json=payload, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        st.session_state.sim_result = data
+        st.toast("Simulation complete!", icon="✅")
+    except requests.exceptions.ConnectionError:
+        st.session_state.sim_error = "Backend not reachable. Start the backend server."
+        st.session_state.sim_result = None
+    except Exception as e:
+        st.session_state.sim_error = f"Simulation error: {e}"
+        st.session_state.sim_result = None
+    finally:
+        st.session_state.sim_loading = False
 
-    # Simple keyword matching logic
-    if "growth" in query or "expand" in query:
-        st.session_state.ui_state.update({"budget": 30, "leads": 750})
-        st.session_state.ai_note = "Prepared growth settings. Review the sliders and hit 'Run'."
-    elif "risk" in query or "crash" in query:
-        st.session_state.ui_state.update({"budget": -15, "interest": 400, "retention": 70})
-        st.session_state.ai_note = "Defensive posture ready. Review sliders and hit 'Run'."
-    else:
-        st.session_state.ui_state.update({"budget": random.randint(-20, 20), "leads": random.randint(200, 800)})
-        st.session_state.ai_note = "Sliders tweaked for your scenario. Ready for simulation."
 
-# Initialize the app state immediately
+def render_sim_plotly(visuals: dict):
+    """Render Plotly chart from backend visuals data."""
+    plotly_data = visuals.get("plotly_data", {})
+    fig = go.Figure()
+    for trace in plotly_data.get("data", []):
+        t = trace.get("type", "scatter")
+        tc = {k: v for k, v in trace.items() if k != "type"}
+        if t in ("scatter", "line"):
+            fig.add_trace(go.Scatter(**tc))
+        elif t == "bar":
+            fig.add_trace(go.Bar(**tc))
+        elif t == "pie":
+            fig.add_trace(go.Pie(**tc))
+        else:
+            fig.add_trace(go.Scatter(**tc))
+
+    layout = plotly_data.get("layout", {})
+    PLOTLY_BG = _c.get("PLOTLY_BG", CARD_INNER)
+    CHART_TEXT_CLR = _c.get("CHART_TEXT", TEXT)
+    CHART_GRID_CLR = _c.get("CHART_GRID", BORDER)
+    layout.update({
+        "margin": dict(l=40, r=40, t=40, b=40),
+        "height": 350,
+        "paper_bgcolor": PLOTLY_BG,
+        "plot_bgcolor": PLOTLY_BG,
+        "font": {"family": "Inter", "size": 12, "color": CHART_TEXT_CLR},
+        "title_font": {"size": 14, "color": CHART_TEXT_CLR},
+        "legend": {"orientation": "h", "y": -0.2, "x": 0.5, "xanchor": "center", "font": {"size": 11, "color": CHART_TEXT_CLR}},
+    })
+    fig.update_layout(**layout)
+    fig.update_xaxes(showgrid=True, gridcolor=CHART_GRID_CLR, color=CHART_TEXT_CLR)
+    fig.update_yaxes(showgrid=True, gridcolor=CHART_GRID_CLR, color=CHART_TEXT_CLR)
+    st.plotly_chart(fig, use_container_width=True, key="sim_chart")
+
+
+# Initialize state
 init_state()
 
 # ==============================================================================
-# 4. TOP BAR – Title + Dark Mode toggle (same as home page)
+# 5. TOP BAR – Title + Domain + Role + Dark Mode toggle
 # ==============================================================================
-top_left, top_spacer, top_right = st.columns([3, 5, 2])
-with top_left:
+top_brand, top_domain, top_role, top_toggle = st.columns([3, 2, 2, 2])
+with top_brand:
     st.markdown(f'<div class="sim-topbar-brand">🔬 Simulation Sandbox</div>', unsafe_allow_html=True)
-with top_right:
+with top_domain:
+    domain_idx = DOMAINS.index(st.session_state.sim_domain) if st.session_state.sim_domain in DOMAINS else 0
+    new_domain = st.selectbox("Domain", DOMAINS, index=domain_idx, key="sim_domain_select", label_visibility="collapsed")
+    if new_domain != st.session_state.sim_domain:
+        st.session_state.sim_domain = new_domain
+        st.session_state.sim_result = None
+        st.rerun()
+with top_role:
+    role_idx = ROLES.index(st.session_state.sim_role) if st.session_state.sim_role in ROLES else 0
+    new_role = st.selectbox("Role", ROLES, index=role_idx, key="sim_role_select", label_visibility="collapsed")
+    if new_role != st.session_state.sim_role:
+        st.session_state.sim_role = new_role
+        st.rerun()
+with top_toggle:
     toggled = st.toggle("Dark Mode", value=st.session_state.dark_mode, key="theme_toggle")
     if toggled != st.session_state.dark_mode:
         st.session_state.dark_mode = toggled
         st.rerun()
 
 # ==============================================================================
-# 5. MAIN LAYOUT
+# 6. MAIN LAYOUT
 # ==============================================================================
 col_main, col_sidebar = st.columns([3, 1], gap="large")
 
+current_domain = st.session_state.sim_domain
+domain_params = DOMAIN_PARAMS.get(current_domain, {})
+
 # --- LEFT COLUMN: MAIN VISUALIZATION ---
 with col_main:
-    
-    # CONTAINER A: Header & Graph
+    # CONTAINER A: Results area
     with st.container(border=True, key="sim_graph_panel"):
-        st.markdown("") 
+        result = st.session_state.sim_result
 
-        # 1. Calculate Data
-        p = st.session_state.sim_params
-        projected, baseline, months = calculate_projections(p)
-        
-        # 2. Display Top Metrics
-        m1, m2, m3 = st.columns(3)
-        diff = ((projected.mean() - baseline.mean()) / (baseline.mean() + 1)) * 100
-        
-        m1.metric("Revenue Forecast", f"${projected.mean()/1000:,.1f}K", f"{diff:.1f}%")
-        m2.metric("Market Fit", f"{p['retention']}%", "Stable")
-        m3.metric("Projected Leads", f"{int(p['leads'])}", f"{int(p['leads']-450)}", delta_color="normal")
-
-        # 3. Render Chart
-        st.subheader("Performance Trajectory")
-        
-        df = pd.DataFrame({
-            'Month': months, 'Baseline': baseline, 'Projected': projected,
-            'Upper': projected + 400, 'Lower': projected - 400
-        })
-
-        base = alt.Chart(df).encode(x=alt.X('Month', sort=months))
-        
-        # Chart Layers
-        line_base = base.mark_line(strokeDash=[5, 5], color=CHART_BASE).encode(y='Baseline')
-        line_proj = base.mark_line(color=CHART_LINE, strokeWidth=4).encode(y='Projected')
-        band = base.mark_area(opacity=0.1, color=CHART_BAND).encode(y='Lower', y2='Upper')
-        
-        # Interactive Tooltip
-        hover = alt.selection_single(fields=['Month'], nearest=True, on='mouseover', empty='none', clear='mouseout')
-        points = base.mark_circle(color=CHART_LINE, size=80).encode(
-            y='Projected',
-            opacity=alt.condition(hover, alt.value(1), alt.value(0)),
-            tooltip=['Month', 'Projected', 'Baseline']
-        ).add_selection(hover)
-        
-        chart = (band + line_base + line_proj + points).properties(height=320).configure_view(
-            strokeWidth=0
-        ).configure(
-            background='transparent'
-        ).configure_axis(
-            labelColor=TEXT,
-            titleColor=TEXT,
-            gridColor=BORDER
-        )
-        st.altair_chart(chart, use_container_width=True)
-
-    # CONTAINER B: Insights
-    with st.container(border=True, key="sim_analysis_panel"):
-        st.subheader("Analysis Insight")
-        if projected.mean() > baseline.mean():
-            st.success(f"**Recommended Insight:** This configuration suggests a healthy surplus. A budget of {p['budget']}% is well-supported.")
+        if st.session_state.sim_loading:
+            st.info("Running simulation… This may take a moment.")
+        elif st.session_state.sim_error:
+            st.error(st.session_state.sim_error)
+        elif result is None:
+            st.info(f"Configure **{current_domain}** parameters and click **▶ Run Simulation** to see results.")
         else:
-            st.error(f"**Strict Observation:** These parameters lead to a deficit. Check your lead volume or unit price.")
+            # Extract content from backend response
+            content = result.get("content", {})
+            meta = result.get("meta", {})
+            visuals = result.get("visuals", {})
 
-# --- RIGHT COLUMN: SIDEBAR CONTROLS ---
+            # Metrics row
+            headline = content.get("headline", "Simulation Result")
+            st.subheader(headline)
+
+            m1, m2, m3 = st.columns(3)
+            conf = meta.get("confidence_score", 0)
+            urgency = meta.get("urgency_score", 0)
+            m1.metric("Confidence", f"{int(conf * 100 if conf <= 1 else conf)}%")
+            m2.metric("Urgency", f"{int(urgency * 100 if urgency <= 1 else urgency)}%")
+            m3.metric("Domain", current_domain)
+
+            # Chart
+            if visuals and visuals.get("plotly_data"):
+                render_sim_plotly(visuals)
+
+            # Summary
+            summary = content.get("summary", "")
+            if summary:
+                st.markdown(f"**Summary:** {summary}")
+
+            # Detailed reasoning
+            detailed = content.get("reasoning_detailed", "")
+            if detailed:
+                with st.expander("📖 Detailed Analysis", expanded=False):
+                    st.markdown(detailed)
+
+    # CONTAINER B: Recommendations
+    with st.container(border=True, key="sim_analysis_panel"):
+        st.subheader("Recommendations")
+        if result and result.get("content", {}).get("recommendations"):
+            recs = result["content"]["recommendations"]
+            for i, rec in enumerate(recs):
+                st.markdown(f"**{i+1}. {rec.get('action', 'Action')}**")
+                st.markdown(f"> {rec.get('detail', '')}")
+                impact = rec.get("expected_impact", "")
+                if impact:
+                    st.caption(f"Expected impact: {impact}")
+        else:
+            st.caption("Run a simulation to see recommendations.")
+
+        # Reasoning chain
+        if result and result.get("reasoning_chain"):
+            with st.expander("💡 Reasoning Chain", expanded=False):
+                for step in result["reasoning_chain"]:
+                    st.markdown(f"**{step['step']}.** *{step['agent']}* – {step['thought']}")
+
+# --- RIGHT COLUMN: PARAMETER CONTROLS ---
 with col_sidebar:
     with st.container(border=True, key="sim_params_panel"):
-        st.title("Parameters")
-        
-        # Tabs for organization
-        tab_money, tab_growth = st.tabs(["Finance", "Strategy"])
-        
-        # Note: We use st.session_state.ui_state for 'value' so the AI can update them
-        with tab_money:
-            st.markdown("####")
-            st.slider("Budget Delta", -50, 50, value=st.session_state.ui_state["budget"], key="slider_budget", format="%d%%")
-            st.slider("Rate Sensitivity", 0, 500, value=st.session_state.ui_state["interest"], key="slider_interest", format="%d bps")
-            st.slider("Market Rate", 0.0, 10.0, value=st.session_state.ui_state["market"], key="slider_market", format="%.1f%%")
-            
-        with tab_growth:
-            st.markdown("####")
-            st.slider("Unit Price", 10, 200, value=st.session_state.ui_state["price"], key="slider_price", format="$%d")
-            st.slider("Retention Rate", 50, 100, value=st.session_state.ui_state["retention"], key="slider_retention", format="%d%%")
-            st.slider("Lead Volume", 0, 1000, value=st.session_state.ui_state["leads"], key="slider_leads")
+        st.markdown(f"### {current_domain} Parameters")
+
+        # Dynamic sliders based on selected domain
+        for param_key, config in domain_params.items():
+            slider_key = f"sim_slider_{param_key}"
+            val = config["default"]
+            # Use float slider if default or min/max are floats
+            if isinstance(val, float) or isinstance(config["min"], float):
+                st.slider(
+                    config["label"],
+                    min_value=float(config["min"]),
+                    max_value=float(config["max"]),
+                    value=float(val),
+                    key=slider_key,
+                    format=config["format"],
+                )
+            else:
+                st.slider(
+                    config["label"],
+                    min_value=int(config["min"]),
+                    max_value=int(config["max"]),
+                    value=int(val),
+                    key=slider_key,
+                    format=config["format"],
+                )
 
         st.divider()
 
-        # AI Section
-        st.markdown("**Simulation Builder**")
-        st.text_area("Describe a situation...", key="user_query", height=80, label_visibility="collapsed")
-        st.button("✨ Adjust Sliders", use_container_width=True, on_click=apply_ai_scenario)
-        
-        if st.session_state.ai_note:
-            st.caption(st.session_state.ai_note)
+        # Scenario prompt
+        st.markdown("**Scenario Prompt** *(optional)*")
+        st.text_area(
+            "Describe a what-if scenario…",
+            key="sim_prompt_input",
+            height=80,
+            label_visibility="collapsed",
+            placeholder="e.g. What if we increase price by 20% and latency spikes to 500ms?",
+        )
 
         st.markdown("<br>", unsafe_allow_html=True)
         # Primary Action Button
-        st.button("▶ Run Simulation", type="primary", use_container_width=True, on_click=run_simulation)
+        st.button("▶ Run Simulation", type="primary", use_container_width=True, on_click=run_simulation_backend)
