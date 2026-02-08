@@ -1,25 +1,36 @@
 from fastapi import FastAPI, HTTPException, Request
 from contextlib import asynccontextmanager
 import json
+import os
 import asyncio
 
 from db_helper_functions import init_db_insights, close_db_insights, recordInsight, getLatestInsightRecordFromDB
 from helper_classes import PromptRequest, InsightRequest, SimulationRequest, BaseSimulationRequest
 
 # LangGraph agent to process queries
+
+from dotenv import load_dotenv
+
+# Load Environment Variables
+load_dotenv()
+# Pre-flight check
+if not os.getenv("GROQ_API_KEY"):
+    print("ERROR: GROQ_API_KEY not found in .env")
+    exit(1)
 from agent import enterprise_agent
 
 # Set to true to have system get latest insights periodically from LLM
 # instead of per request from frontend
 PERIODIC_UPDATES = False
 
-async def query_langgraph(messages, domain, is_simulation=False, simulation_inputs=[]):
+async def query_langgraph(messages, role, current_silo:str, is_simulation=False, simulation_inputs=[]):
     # Input format required by LangGraph
     inputs = {
         "messages": messages,
-        "role": domain,
-        is_simulation: is_simulation,
-        simulation_inputs: simulation_inputs
+        "role": role,
+        "is_simulation": is_simulation,
+        "simulation_inputs": simulation_inputs,
+        "current_silo": current_silo
     }
 
     try:
@@ -101,8 +112,8 @@ async def retrieveSimulationResults(request: Request, set_fields: BaseSimulation
     return response
 
 @app.post("/simulation")
-async def getSimulation(data: SimulationRequest):
-    return await retrieveSimulationResults(data=data)
+async def getSimulation(request: Request, set_fields: BaseSimulationRequest):
+    return await retrieveSimulationResults(request, set_fields)
 
 # Function to get latest row from insights table in the database 
 def getLatestInsights(domain, role_context):
