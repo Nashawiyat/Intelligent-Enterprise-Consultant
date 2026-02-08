@@ -1,0 +1,255 @@
+-- tables SALES (ERP)
+
+CREATE TABLE Customers (	-- also includes debtor files
+  -- customer details
+  customerID INTEGER PRIMARY KEY AUTOINCREMENT,
+--  debtorID INTEGER,		
+  companyName TEXT NOT NULL,
+  streetAddress TEXT NOT NULL,
+  postcode TEXT NOT NULL,
+  city TEXT NOT NULL,
+  state TEXT NOT NULL,
+  country TEXT NOT NULL,
+  
+  -- contact person
+  firstName TEXT NOT NULL,
+  lastName TEXT NOT NULL,
+  email TEXT UNIQUE NOT NULL,
+  telephone TEXT NOT NULL,
+  
+  -- debtor details
+  ibancode TEXT,
+  currentBalance DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+  category TEXT CHECK(category IN ('B2C customer', 'B2B customer', 'government', 'affiliates')) DEFAULT 'B2C customer',
+
+  -- is company still customer
+  isActive BOOLEAN DEFAULT 1,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE Products (
+  productID INTEGER PRIMARY KEY AUTOINCREMENT,
+  productName TEXT NOT NULL,
+  currentProductVersion INTEGER NOT NULL,
+  standardPrice DECIMAL(10, 2) NOT NULL, -- The default MSRP
+  costPerUnit DECIMAL(10, 2) NOT NULL,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE CustomerPrices (
+  customerID INTEGER NOT NULL,
+  productID INTEGER NOT NULL,
+  customPrice DECIMAL(10, 2) NOT NULL,
+  
+  PRIMARY KEY (customerID, productID),
+  FOREIGN KEY (customerID) REFERENCES Customers(customerID),
+  FOREIGN KEY (productID) REFERENCES Products(productID)
+);
+
+CREATE TABLE PriceHistory (
+  -- history details
+  productHistoryID INTEGER PRIMARY KEY AUTOINCREMENT,
+  productID INTEGER NOT NULL,
+  oldPrice DECIMAL(10, 2) NOT NULL,
+  startDate DATETIME NOT NULL,
+  endDate DATETIME,
+  
+  -- links to product
+  FOREIGN KEY (productID) REFERENCES Products(productID) ON DELETE RESTRICT,
+  
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE QuantityDiscounts (
+  discountID INTEGER PRIMARY KEY AUTOINCREMENT,
+  productID INTEGER NOT NULL,
+  customerID INTEGER, -- Removed NOT NULL to allow for general bulk discounts
+  minQuantity INTEGER NOT NULL,
+  discountPrice DECIMAL(10, 2),
+  
+  FOREIGN KEY (productID) REFERENCES Products(productID) ON DELETE CASCADE,
+  FOREIGN KEY (customerID) REFERENCES Customers(customerID) ON DELETE CASCADE
+);
+
+CREATE TABLE Orders (
+  orderID INTEGER PRIMARY KEY AUTOINCREMENT,
+  productID INTEGER NOT NULL,
+  customerID INTEGER NOT NULL,
+  quantity INTEGER NOT NULL,
+  finalPrice DECIMAL(10, 2) NOT NULL, 
+  profit DECIMAL(15, 2) NOT NULL,
+  deliveryDate DATETIME,
+  status TEXT CHECK(status IN ('pending', 'in production', 'in stock', 'delivered', 'paid')) DEFAULT 'pending',
+  saleDate DATETIME DEFAULT CURRENT_TIMESTAMP,
+  isActive BOOLEAN DEFAULT 1,
+  wasCancelled BOOLEAN DEFAULT 0,
+
+  CONSTRAINT check_quantity_positive CHECK (quantity > 0), 
+
+  FOREIGN KEY (productID) REFERENCES Products(productID),
+  FOREIGN KEY (customerID) REFERENCES Customers(customerID)
+);
+
+-- tables for Accounting (ERP)
+
+CREATE TABLE BankAccounts (
+  accountID INTEGER PRIMARY KEY AUTOINCREMENT,
+  accountName TEXT NOT NULL,
+  ibancode TEXT,
+  currentBalance DECIMAL(15, 2) DEFAULT 0.00,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE BankAccountsHistory (
+  logID INTEGER PRIMARY KEY AUTOINCREMENT,
+  accountID INTEGER NOT NULL,
+  balance DECIMAL(15, 2) NOT NULL,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (accountID) REFERENCES BankAccounts(accountID)
+);
+
+CREATE TABLE Creditors (
+  creditorID INTEGER PRIMARY KEY AUTOINCREMENT,
+  creditorName TEXT NOT NULL,
+  ibancode TEXT,
+  totalAmount DECIMAL(15, 2) NOT NULL DEFAULT 0.00, 
+  contactName TEXT NOT NULL,
+  phoneNumber TEXT NOT NULL,
+  category TEXT CHECK(category IN ('supplier', 'utilities', 'services', 'government')) DEFAULT 'supplier',
+  isActive BOOLEAN DEFAULT 1, 
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- debtor table is included in Customer
+-- CREATE TABLE Debtors (
+--  debtorID INTEGER PRIMARY KEY AUTOINCREMENT,
+--  customerID INTEGER, 
+--  debtorName TEXT NOT NULL,
+--  ibancode TEXT,
+--  totalAmount DECIMAL(15, 2) NOT NULL DEFAULT 0.00, 
+--  contactName TEXT NOT NULL,
+--  phoneNumber TEXT NOT NULL,
+--  category TEXT CHECK(category IN ('B2C customer', 'B2B customer', 'government', 'affiliates')) DEFAULT 'B2C customer',
+--  isActive BOOLEAN DEFAULT 1,
+--  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+-- );
+
+CREATE TABLE Transactions (
+  transactionID INTEGER PRIMARY KEY AUTOINCREMENT,
+  accountID INTEGER NOT NULL,
+  creditorID INTEGER,
+  customerID INTEGER,	-- debtor
+  oderID INTEGER NOT NULL,
+  taxAmount DECIMAL(15, 2) NOT NULL,
+  netAmount DECIMAL(15, 2) NOT NULL,
+  grossAmount DECIMAL(15, 2) NOT NULL, -- Added for reporting
+  dueDATE DATETIME NOT NULL,
+  paidAmount DECIMAL(15, 2) DEFAULT 0.00,
+  paidAt DATETIME DEFAULT NULL,
+  comments TEXT,
+  direction TEXT CHECK(direction IN ('IN', 'OUT')) NOT NULL,
+  transactionType TEXT, 
+  status TEXT CHECK(status IN ('pending', 'completed')) DEFAULT 'pending',
+  transactionDate DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+  -- Enforcement: IN must have a Debtor (Customer), OUT must have a Creditor
+  CONSTRAINT direction_party_check CHECK (
+    (direction = 'IN' AND customerID IS NOT NULL AND creditorID IS NULL) OR
+    (direction = 'OUT' AND creditorID IS NOT NULL AND customerID IS NULL)
+  ),
+  
+  FOREIGN KEY (accountID) REFERENCES BankAccounts(accountID),
+  FOREIGN KEY (creditorID) REFERENCES Creditors(creditorID),
+  FOREIGN KEY (customerID) REFERENCES Customers(customerID),
+  FOREIGN KEY (orderID) REFERENCES Orders(orderID)
+);
+
+
+
+-- tables HR (ERP)
+
+CREATE TABLE Department (
+  departmentID INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL
+);
+
+CREATE TABLE Employee (
+  employeeID INTEGER PRIMARY KEY AUTOINCREMENT,
+  firstName TEXT NOT NULL,
+  lastName TEXT NOT NULL,
+  dateOfBirth DATE,
+  email TEXT NOT NULL UNIQUE,
+  phone TEXT NOT NULL,
+  salary DECIMAL(9, 2) NOT NULL,
+  departmentID Integer NOT NULL,
+  isActive BOOLEAN DEFAULT 1,
+  FOREIGN KEY (departmentID) REFERENCES Department(departmentID) ON DELETE RESTRICT
+);
+
+
+
+-- tables Operation (ERP)
+
+CREATE TABLE ProductionCost (
+  costID INTEGER PRIMARY KEY AUTOINCREMENT,
+  productID INTEGER NOT NULL,  -- pointer to Product
+  orderID INTEGER NOT NULL,    -- pointer to Order
+    
+  -- Cost breakdown
+  materialCost DECIMAL(10, 2) NOT NULL,     -- sum of components
+  laborCost DECIMAL(10, 2) NOT NULL,        -- entered manually
+  overheadCost DECIMAL(10, 2) DEFAULT 0.00, -- electricity, rent, etc.
+  totalProductionCost DECIMAL(10, 2) NOT NULL,
+    
+  -- time tracking
+  startDate DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  endDate DATETIME, -- NULL means this is the current active cost
+
+  comments TEXT,
+
+  FOREIGN KEY (productID) REFERENCES Products(productID),
+  FOREIGN KEY (orderID) REFERENCES Orders(orderID),
+
+    CONSTRAINT checkCostSum CHECK (totalProductionCost = materialCost + laborCost + overheadCost)
+);
+
+-- db CRM
+
+-- Track potential customers before they buy
+CREATE TABLE Leads (
+  leadID INTEGER PRIMARY KEY AUTOINCREMENT,
+  customerID INTEGER,
+  companyName TEXT,
+  contactName TEXT,
+  email TEXT,
+  estimatedValue DECIMAL(10, 2),
+  -- Pipeline stages
+  status TEXT CHECK(status IN ('New', 'Contacted', 'Qualified', 'Negotiation', 'Lost', 'Customer')) DEFAULT 'New',
+
+  FOREIGN KEY (customerID) REFERENCES Customers(customerID) ON DELETE SET NULL,
+
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Track phone call, email, or meeting
+CREATE TABLE Interactions (
+  interactionID INTEGER PRIMARY KEY AUTOINCREMENT,
+  leadID INTEGER,     -- link to a Lead
+  type TEXT CHECK(type IN ('Call', 'Email', 'Meeting', 'Note')),
+  summary TEXT NOT NULL,
+  followUpDate DATETIME,
+
+  FOREIGN KEY (leadID) REFERENCES Leads(leadID),
+  interactionDate DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+
+
+-- db Insights
+
+CREATE TABLE Insights (
+  insightID INTEGER PRIMARY KEY AUTOINCREMENT,
+  json TEXT,
+  domain TEXT,
+  savedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+);
