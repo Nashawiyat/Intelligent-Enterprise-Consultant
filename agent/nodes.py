@@ -112,7 +112,7 @@ def reasoner_node(state: AgentState):
     {format_inst}
     
     TASK (If JSON):
-    1. TARGETING: Choose from [Finance, Operations, Sales, Marketing, IT, Executive].
+    1. TARGETING: Choose from [Operations, Sales, Marketing, HR, Executive, Accounting].
     2. MATH: Calculate ((New-Old)/Old)*100 manually.
     
     STRICT JSON TEMPLATE:
