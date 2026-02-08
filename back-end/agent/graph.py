@@ -27,6 +27,12 @@ def route_after_sql(state: AgentState):
         return "simulation_specialist"
     return "causal_reasoner"
 
+def route_after_reasoner(state: AgentState):
+    """If reasoning needs more data, loop back to SQL; otherwise continue."""
+    if state.get("needs_more_data", False):
+        return "sql_specialist"
+    return "security_gatekeeper"
+
 # Entry point
 workflow.set_entry_point("orchestrator")
 
@@ -44,7 +50,14 @@ workflow.add_conditional_edges(
 )
 
 workflow.add_edge("simulation_specialist", "causal_reasoner")
-workflow.add_edge("causal_reasoner", "security_gatekeeper")
+workflow.add_conditional_edges(
+    "causal_reasoner",
+    route_after_reasoner,
+    {
+        "sql_specialist": "sql_specialist",
+        "security_gatekeeper": "security_gatekeeper"
+    }
+)
 workflow.add_edge("security_gatekeeper", END)
 
 # Compile

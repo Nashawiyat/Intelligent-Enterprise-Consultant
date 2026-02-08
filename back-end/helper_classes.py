@@ -38,10 +38,16 @@ class AccountingSimulation(BaseModel):
 class OperationSimulation(BaseModel):
     domain: Literal["sales"]
     role_context: str
-
-    # TODO: Add fields
-    
+    api_latency: int
+    failure_rate: float # Percentage
+    throughput: int # req/s
     prompt: str | None = None
+
+class BaseSimulationRequest(BaseModel):
+    domain: str
+    role_context: str
+    prompt: str | None = None
+
 
 SimulationRequest: TypeAlias = Union[
     SalesSimulation,
