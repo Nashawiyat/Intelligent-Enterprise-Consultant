@@ -99,6 +99,9 @@ async def retrieveSimulationResults(request: Request, set_fields: BaseSimulation
         if field in extra_params:
             del extra_params[field]
     
+    if set_fields.prompt is None:
+        set_fields.prompt = "Use simulation inputs to build a baseline query for revenue and latency trends."
+
     sim_inputs = {
         "messages": [(set_fields.role_context, set_fields.prompt)],
         "role": set_fields.role_context,
