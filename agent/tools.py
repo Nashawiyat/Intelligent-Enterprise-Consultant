@@ -4,7 +4,7 @@ from langchain_core.tools import tool
 from typing import List, Dict, Any
 
 # TODO: Fix to actual path
-DATABASE_PATH = "/backend/database.db"
+DATABASE_PATH = "../backend/database.db"
 
 @tool
 def query_enterprise_database(sql_query: str) -> str:
