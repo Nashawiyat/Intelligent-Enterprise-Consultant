@@ -57,7 +57,7 @@ async def retrievePeriodicUpdatedInsights():
                 "current_silo": domain # Initializing to avoid KeyErrors
             }
             
-            json_result = query_langgraph(**proactive_inputs)
+            json_result = await query_langgraph(**proactive_inputs)
             recordInsight(json_result, domain)
         
         await asyncio.sleep(60)
@@ -116,7 +116,7 @@ async def getSimulation(request: Request, set_fields: BaseSimulationRequest):
     return await retrieveSimulationResults(request, set_fields)
 
 # Function to get latest row from insights table in the database 
-def getLatestInsights(domain, role_context):
+async def getLatestInsights(domain, role_context):
     if PERIODIC_UPDATES:
         insight_result = getLatestInsightRecordFromDB(domain)
     else:
@@ -127,7 +127,7 @@ def getLatestInsights(domain, role_context):
             "current_silo": domain # Initializing to avoid KeyErrors
         }
         
-        insight_result = query_langgraph(proactive_inputs)
+        insight_result = await query_langgraph(**proactive_inputs)
     return insight_result
 
 @app.post("/insights")
@@ -135,17 +135,18 @@ async def getInsights(data: InsightRequest):
     domain = data.domain
     role_context = data.role_context
 
-    return getLatestInsights(domain, role_context)
+    return await getLatestInsights(domain, role_context)
 
-# TODO: Connect to LangGraph
 @app.post("/prompt")
 async def getPrompt(data: PromptRequest):
     inputs = {
         "messages": [
-            ("user", "Perform a health check."),
-            ("user", "Why exactly is the latency affecting revenue? Give me the breakdown.")
+            ("user", data.prompt),
         ],
-        "role": "CEO",
-        "is_simulation": False
+        "role": data.role_context,
+        "is_simulation": False,
+        "current_silo": data.domain
     }
-    return {"prompt": data.prompt, "response":"TODO"}
+
+    json_result = await query_langgraph(**inputs)
+    return json_result
