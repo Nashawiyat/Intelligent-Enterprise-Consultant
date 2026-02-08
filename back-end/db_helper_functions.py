@@ -1,3 +1,5 @@
+# NOTE: NO LONGER BEING USED; KEPT FOR FUTURE IMPROVEMENT
+
 import sqlite3
 
 insights_conn = None
