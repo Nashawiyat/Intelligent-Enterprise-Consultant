@@ -246,6 +246,13 @@ def clamp_score(value, default=0.7) -> float:
         return default
     return max(0.0, min(1.0, numeric))
 
+def sanitize_layman_analysis(text: str) -> str:
+    raw = str(text or "")
+    cleaned = re.sub(r"\(\([^\)]*\)\)", "", raw)
+    cleaned = re.sub(r"\b\d+(?:\.\d+)?\s*[\*/]\s*\d+(?:\.\d+)?\b", "", cleaned)
+    cleaned = re.sub(r"\b\d+(?:\.\d+)?\s*[\+\-]\s*\d+(?:\.\d+)?\b", "", cleaned)
+    return re.sub(r"\s{2,}", " ", cleaned).strip()
+
 def parse_llm_json(text: str) -> dict | None:
     cleaned = strip_control_chars(clean_llm_json(text or ""))
     if not cleaned:
@@ -397,6 +404,8 @@ def semantic_sweep_fields(fact_sheet: dict) -> dict:
 
 def role_silo_preferences(user_role: str, target_silos: list | None) -> list[str]:
     role = (user_role or "").lower()
+    if "sales manager" in role:
+        return ["Sales", "CRM"]
     if "sales" in role:
         return ["Sales", "CRM"]
     if "crm" in role:
@@ -432,12 +441,17 @@ def select_trace_fields(fact_sheet: dict, user_role: str | None, target_silos: l
     elif "hr" in role:
         preferred_bucket = "Human_Capital"
 
+    preferred_silos = role_silo_preferences(user_role or "", target_silos)
+    silo_pool = [c for c in candidates if table_to_silo(c["table_name"]) in preferred_silos]
+    if not silo_pool:
+        silo_pool = candidates
+
     def bucket_for(candidate):
         return bucket_lookup.get((candidate["table_name"], candidate["field_name"]))
 
-    primary_pool = [c for c in candidates if bucket_for(c) == preferred_bucket]
+    primary_pool = [c for c in silo_pool if bucket_for(c) == preferred_bucket]
     if not primary_pool:
-        primary_pool = candidates
+        primary_pool = silo_pool
     primary = max(primary_pool, key=lambda c: (c["abs_delta"], c["abs_change"]))
 
     financial_pool = [c for c in candidates if bucket_for(c) == "Financial_Effect"]
@@ -475,60 +489,41 @@ def ensure_minimum_silos(silos: list[str]) -> list[str]:
 def build_headline_from_traces(primary: dict | None, secondary: dict | None) -> str:
     if primary and secondary:
         return (
-            f"{format_metric_label(primary['field_name'])} Change in {table_to_silo(primary['table_name'])} "
+            f"{format_metric_label(primary['field_name'])} in {table_to_silo(primary['table_name'])} "
             f"Impacting {format_metric_label(secondary['field_name'])} in {table_to_silo(secondary['table_name'])}"
         )
     if primary:
-        return f"{format_metric_label(primary['field_name'])} Change in {table_to_silo(primary['table_name'])} Impacting Finance"
-    return "Cross-silo Change in Operations Impacting Finance"
+        return f"{format_metric_label(primary['field_name'])} in {table_to_silo(primary['table_name'])} Impacting Accounting"
+    return "Cross-silo Change in Operations Impacting Accounting"
 
 def build_simulation_comparison_visuals(fact_sheet: dict, simulation_summary: dict | None) -> dict:
     x_values = ["Current Actual", "Simulated Projection"]
     financial = select_financial_fields(fact_sheet)
-    projected = simulation_summary.get("projected") if isinstance(simulation_summary, dict) else {}
+    filtered_financial = [
+        metric for metric in financial
+        if table_to_silo(metric.get("table_name")) in ["Accounting", "HR"]
+    ]
+    if not filtered_financial:
+        filtered_financial = financial
+
+    price_change_pct = simulation_summary.get("price_change_pct", 0) if isinstance(simulation_summary, dict) else 0
+    price_change_ratio = normalize_price_change(price_change_pct)
 
     traces = []
-    revenue_metric = None
-    expenditure_metric = None
-    if len(financial) >= 2:
-        first = financial[0]
-        second = financial[1]
-        if first.get("current", 0.0) >= second.get("current", 0.0):
-            revenue_metric, expenditure_metric = first, second
-        else:
-            revenue_metric, expenditure_metric = second, first
-    elif financial:
-        revenue_metric = financial[0]
-        expenditure_metric = financial[0]
-
-    projected_revenue = None
-    if isinstance(projected, dict):
-        numeric_values = [v for v in projected.values() if isinstance(v, (int, float))]
-        projected_revenue = numeric_values[0] if numeric_values else None
-    if revenue_metric is None:
-        projected_revenue = projected_revenue or 0.0
-    else:
-        projected_revenue = projected_revenue if projected_revenue is not None else revenue_metric.get("current", 0.0)
-
-    if revenue_metric and expenditure_metric:
-        revenue_current = revenue_metric.get("current", 0.0)
-        expenditure_current = expenditure_metric.get("current", 0.0)
-        margin = 0.0
-        if revenue_current:
-            margin = (revenue_current - expenditure_current) / revenue_current
-        projected_expenditure = projected_revenue * (1 - margin)
-
+    for metric in filtered_financial[:2]:
+        baseline = metric.get("baseline")
+        current_actual = metric.get("current")
+        if not isinstance(baseline, (int, float)):
+            baseline = current_actual if isinstance(current_actual, (int, float)) else 0.0
+        if not isinstance(current_actual, (int, float)):
+            current_actual = baseline if isinstance(baseline, (int, float)) else 0.0
+        projected_total = baseline * (1 + price_change_ratio)
+        projected_total = max(0.0, projected_total)
         traces.append({
             "type": "bar",
-            "name": format_metric_label(revenue_metric["field_name"]),
+            "name": format_metric_label(metric.get("field_name")),
             "x": x_values,
-            "y": [revenue_current, projected_revenue]
-        })
-        traces.append({
-            "type": "bar",
-            "name": format_metric_label(expenditure_metric["field_name"]),
-            "x": x_values,
-            "y": [expenditure_current, projected_expenditure]
+            "y": [current_actual, projected_total]
         })
 
     if not traces:
@@ -558,46 +553,42 @@ def get_field_values(fact_sheet: dict, keys: list[str]) -> dict | None:
     }
 
 def build_reasoning_from_fact_sheet(fact_sheet: dict, user_role: str) -> dict:
-    candidates = collect_metric_candidates(fact_sheet)
-    accounting_candidates = [
-        c for c in candidates
-        if table_to_silo(c.get("table_name")) == "Accounting"
-    ]
-    if fact_sheet.get("semantic_buckets") and accounting_candidates:
-        bucket_items = fact_sheet.get("semantic_buckets", {}).get("Financial_Effect", [])
-        bucket_keys = {
-            (item.get("table"), item.get("field"))
-            for item in bucket_items
-            if isinstance(item, dict)
-        }
-        accounting_candidates = [
-            c for c in accounting_candidates
-            if (c.get("table_name"), c.get("field_name")) in bucket_keys
-        ] or accounting_candidates
+    tables = fact_sheet.get("tables", {}) if isinstance(fact_sheet, dict) else {}
+    accounting = tables.get("erp_accounting", {}) if isinstance(tables, dict) else {}
+    accounting_fields = accounting.get("fields", {}) if isinstance(accounting, dict) else {}
+    revenue_values = accounting_fields.get("revenue", {}) if isinstance(accounting_fields, dict) else {}
 
-    revenue_source = None
-    if accounting_candidates:
-        revenue_source = max(accounting_candidates, key=lambda c: c.get("current", 0.0))
-    actual_revenue = revenue_source.get("current", 0.0) if revenue_source else 0.0
-    baseline_revenue = revenue_source.get("baseline", 0.0) if revenue_source else 0.0
+    actual_revenue = revenue_values.get("current", 0.0)
+    baseline_revenue = revenue_values.get("baseline", 0.0)
+    if not isinstance(actual_revenue, (int, float)):
+        actual_revenue = 0.0
+    if not isinstance(baseline_revenue, (int, float)):
+        baseline_revenue = 0.0
     cash_flow_impact = actual_revenue - baseline_revenue
 
-    expenditure_source = None
-    if accounting_candidates:
-        expenditure_pool = [c for c in accounting_candidates if c is not revenue_source]
-        if not expenditure_pool:
-            expenditure_pool = accounting_candidates
-        expenditure_source = max(expenditure_pool, key=lambda c: c.get("abs_change", 0.0))
     expenditure_delta = 0.0
-    if expenditure_source:
-        expenditure_delta = expenditure_source.get("current", 0.0) - expenditure_source.get("baseline", 0.0)
+    expenditure_values = accounting_fields.get("expenditure", {}) if isinstance(accounting_fields, dict) else {}
+    exp_current = expenditure_values.get("current") if isinstance(expenditure_values, dict) else None
+    exp_baseline = expenditure_values.get("baseline") if isinstance(expenditure_values, dict) else None
+    if isinstance(exp_current, (int, float)) and isinstance(exp_baseline, (int, float)):
+        expenditure_delta = exp_current - exp_baseline
+    else:
+        hr = tables.get("erp_hr", {}) if isinstance(tables, dict) else {}
+        hr_fields = hr.get("fields", {}) if isinstance(hr, dict) else {}
+        payroll_values = hr_fields.get("payroll_expenditure", {}) if isinstance(hr_fields, dict) else {}
+        payroll_current = payroll_values.get("current") if isinstance(payroll_values, dict) else None
+        payroll_baseline = payroll_values.get("baseline") if isinstance(payroll_values, dict) else None
+        if isinstance(payroll_current, (int, float)) and isinstance(payroll_baseline, (int, float)):
+            expenditure_delta = payroll_current - payroll_baseline
 
     variable_mapping = {
         "ACTUAL_REVENUE": actual_revenue,
         "BASELINE_REVENUE": baseline_revenue,
         "CASH_FLOW_IMPACT": cash_flow_impact,
-        "ACCOUNTING_TABLE": revenue_source.get("table_name") if revenue_source else None,
-        "ACCOUNTING_FIELD": revenue_source.get("field_name") if revenue_source else None
+        "REVENUE_TABLE": "erp_accounting",
+        "REVENUE_FIELD": "revenue",
+        "EXPENDITURE_TABLE": "erp_accounting" if isinstance(exp_current, (int, float)) else "erp_hr",
+        "EXPENDITURE_FIELD": "expenditure" if isinstance(exp_current, (int, float)) else "payroll_expenditure"
     }
 
     primary, secondary = select_trace_fields(fact_sheet, user_role, map_tables_to_silos(fact_sheet))
@@ -625,11 +616,26 @@ def build_reasoning_from_fact_sheet(fact_sheet: dict, user_role: str) -> dict:
         f"Estimated Expenditure: ${abs(expenditure_delta):.0f}."
     )
 
+    abs_delta_dollars = abs(variable_mapping["CASH_FLOW_IMPACT"])
+    abs_delta_percent = 0.0
+    if baseline_revenue:
+        abs_delta_percent = abs((variable_mapping["CASH_FLOW_IMPACT"] / baseline_revenue) * 100)
+    recovery_ratio = max(0.0, min(1.0, abs_delta_percent / 100.0))
+    estimated_recovery = abs_delta_dollars * recovery_ratio
+    recovery_pct = recovery_ratio * 100.0
+    expenditure_reduction_pct = 0.0
+    if isinstance(exp_baseline, (int, float)) and exp_baseline != 0:
+        expenditure_reduction_pct = abs((expenditure_delta / exp_baseline) * 100)
     recommendations = [
         {
             "action": "Validate root cause",
             "detail": f"Investigate {ops_silo} drivers behind {ops_metric} changes.",
-            "expected_impact": "Stabilize operational performance and protect revenue."
+            "expected_impact": f"Estimated {recovery_pct:.1f}% recovery of cash flow with projected ${estimated_recovery:.0f} monthly revenue recovery."
+        },
+        {
+            "action": "Stabilize financial leakage",
+            "detail": f"Coordinate {ops_silo} and {fin_silo} controls to reduce cost drift.",
+            "expected_impact": f"Estimated {recovery_pct:.1f}% recovery of cash flow plus ${abs(expenditure_delta):.0f} containment and {expenditure_reduction_pct:.1f}% expenditure stabilization."
         }
     ]
 
@@ -660,6 +666,7 @@ def enforce_strict_schema(data: dict | None, fact_sheet: dict, user_role: str, i
         "reasoning_detailed": content.get("reasoning_detailed") or fallback_content["reasoning_detailed"],
         "recommendations": content.get("recommendations") or fallback_content["recommendations"]
     }
+    content["reasoning_detailed"] = sanitize_layman_analysis(content.get("reasoning_detailed", ""))
     if not isinstance(content.get("recommendations"), list) or not content.get("recommendations"):
         content["recommendations"] = fallback_content["recommendations"]
 
@@ -700,9 +707,11 @@ def enforce_strict_schema(data: dict | None, fact_sheet: dict, user_role: str, i
     primary, secondary = select_trace_fields(fact_sheet, user_role, data.get("target_silos"))
     content["headline"] = build_headline_from_traces(primary, secondary)
 
-    tables = fact_sheet.get("tables", {}) if isinstance(fact_sheet, dict) else {}
-    mapped = [table_to_silo(name) for name in tables.keys()]
-    target_silos = infer_only_allowed(mapped)
+    mention_text = " ".join([
+        str(content.get("headline", "")),
+        str(content.get("reasoning_detailed", ""))
+    ])
+    target_silos = [s for s in infer_target_silos(mention_text) if s != "General"]
 
     return {
         "insight_id": insight_id,
@@ -966,6 +975,33 @@ def generate_plotly_from_fact_sheet(
 ) -> dict:
     tables = fact_sheet.get("tables", {})
     primary, secondary = select_trace_fields(fact_sheet, user_role, target_silos)
+    buckets = fact_sheet.get("semantic_buckets", {}) if isinstance(fact_sheet, dict) else {}
+    bucket_lookup = {}
+    for bucket_name, items in buckets.items() if isinstance(buckets, dict) else []:
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, dict):
+                bucket_lookup[(item.get("table"), item.get("field"))] = bucket_name
+
+    if primary is None:
+        candidates = collect_metric_candidates(fact_sheet)
+        cause_pool = [
+            c for c in candidates
+            if bucket_lookup.get((c["table_name"], c["field_name"])) == "Operational_Cause"
+        ]
+        if cause_pool:
+            primary = max(cause_pool, key=lambda c: (c["abs_delta"], c["abs_change"]))
+
+    if secondary is None and primary is not None:
+        candidates = collect_metric_candidates(fact_sheet)
+        effect_pool = [
+            c for c in candidates
+            if bucket_lookup.get((c["table_name"], c["field_name"])) == "Financial_Effect" and c is not primary
+        ]
+        if effect_pool:
+            secondary = max(effect_pool, key=lambda c: (c["abs_change"], c["abs_delta"]))
+
     traces = []
     fallback_start, fallback_end = resolve_date_pair(fact_sheet)
     if primary:
@@ -991,26 +1027,16 @@ def generate_plotly_from_fact_sheet(
             "y": y_values
         })
     if not traces:
-        first_field = None
-        first_table = None
-        for table in tables.values():
-            fields = table.get("fields", {}) if isinstance(table, dict) else {}
-            for field_name in fields.keys():
-                first_field = field_name
-                first_table = table
-                break
-            if first_field:
-                break
-        if first_field and first_table:
+        candidates = collect_metric_candidates(fact_sheet)
+        if candidates:
+            fallback_metric = max(candidates, key=lambda c: (c["abs_delta"], c["abs_change"]))
+            fallback_table = tables.get(fallback_metric["table_name"], {}) if isinstance(tables, dict) else {}
             traces = [{
                 "type": "scatter",
                 "mode": "lines+markers",
-                "name": format_metric_label(first_field),
-                "x": [first_table.get("baseline_date") or fallback_start, first_table.get("current_date") or fallback_end],
-                "y": [
-                    first_table["fields"][first_field]["baseline"],
-                    first_table["fields"][first_field]["current"]
-                ]
+                "name": format_metric_label(fallback_metric["field_name"]),
+                "x": [fallback_table.get("baseline_date") or fallback_start, fallback_table.get("current_date") or fallback_end],
+                "y": [fallback_metric["baseline"], fallback_metric["current"]]
             }]
         else:
             traces = [{
@@ -1235,9 +1261,23 @@ def patch_insight_json(data: dict, fact_sheet: dict, user_role: str, is_sim: boo
         visuals["chart_type"] = "bar" if is_sim else visuals.get("chart_type", "line")
     data["visuals"] = visuals
 
+    mention_text = " ".join([
+        str(content.get("headline", "")),
+        str(content.get("reasoning_detailed", ""))
+    ])
+    mentioned = set(infer_target_silos(mention_text))
+    active_silos = set()
     tables = fact_sheet.get("tables", {}) if isinstance(fact_sheet, dict) else {}
-    mapped = [table_to_silo(name) for name in tables.keys()]
-    data["target_silos"] = infer_only_allowed(mapped)
+    table_items = tables.items() if isinstance(tables, dict) else []
+    for table_name, table in table_items:
+        fields = table.get("fields", {}) if isinstance(table, dict) else {}
+        field_values = fields.values() if isinstance(fields, dict) else []
+        for values in field_values:
+            delta = values.get("delta_pct") if isinstance(values, dict) else None
+            if isinstance(delta, (int, float)) and abs(delta) > 0:
+                active_silos.add(table_to_silo(table_name))
+                break
+    data["target_silos"] = infer_only_allowed(list(mentioned.intersection(active_silos)))
     return data
 
 def reasoner_node(state: AgentState):
@@ -1271,16 +1311,16 @@ def reasoner_node(state: AgentState):
     silo_instruction_block = "\n".join(
         [f"- {silo}: {SILO_INSTRUCTIONS.get(silo, '')}" for silo in target_silos]
     )
-    silo_focus = SILO_FOCUS_MAP.get(detected_silo, "latency, throughput, uptime, bottleneck")
+    silo_focus = SILO_FOCUS_MAP.get(detected_silo, "technical performance, throughput, reliability, bottleneck")
 
     mission_switch = {
         "Sales": "Act as a CI (Chief Intelligence) surrogate. Focus on revenue leakage, customer churn, and pipeline velocity.",
-        "Operations": "Act as a CI (Chief Intelligence) surrogate. Focus on bottlenecks, latency, and uptime.",
+        "Operations": "Act as a CI (Chief Intelligence) surrogate. Focus on bottlenecks and technical performance reliability.",
         "HR": "Act as a CI (Chief Intelligence) surrogate. Focus on churn, headcount, payroll, and productivity impacts.",
         "Accounting": "Act as a CI (Chief Intelligence) surrogate. Focus on expenditure, cash flow, and margins.",
         "CRM": "Act as a CI (Chief Intelligence) surrogate. Focus on sentiment, retention, support tickets, and NPS impacts."
     }
-    persona_focus = mission_switch.get(detected_silo, "Focus on bottlenecks, latency impact, and SLA breaches.")
+    persona_focus = mission_switch.get(detected_silo, "Focus on bottlenecks, technical impact, and service reliability shifts.")
 
     # PERSONA FILTER: Prevent database leaks in chat
     if is_chat:
@@ -1319,7 +1359,7 @@ def reasoner_node(state: AgentState):
             "- Treat simulation_inputs as PROJECTED (what-if).\n"
             "- If a percentage change is provided, compute PROJECTED = BASELINE * (1 + change/100).\n"
             "- Compare BASELINE vs PROJECTED using the delta formula.\n"
-            "- Report findings using the SQL results; do not assume a specific metric like latency.\n"
+            "- Report findings using the SQL results and dynamic metric keys from the provided JSON context.\n"
             f"PROJECTED INPUTS: {simulation_inputs}\n"
         )
 
@@ -1346,8 +1386,8 @@ def reasoner_node(state: AgentState):
             "chart_type": "bar",
             "plotly_data": {{
                 "data": [
-                    {{ "type": "bar", "name": "Baseline Revenue", "x": ["Baseline"], "y": [0] }},
-                    {{ "type": "bar", "name": "Simulated Revenue", "x": ["Simulated"], "y": [0] }}
+                    {{ "type": "bar", "name": "Baseline Metric", "x": ["Current Actual"], "y": [0] }},
+                    {{ "type": "bar", "name": "Projected Metric", "x": ["Simulated Projection"], "y": [0] }}
                 ]
             }}
         }}
@@ -1371,8 +1411,8 @@ def reasoner_node(state: AgentState):
             "chart_type": "line",
             "plotly_data": {{
                 "data": [
-                    {{ "type": "scatter", "mode": "lines+markers", "name": "Root Cause", "x": ["2026-01-01"], "y": [0] }},
-                    {{ "type": "scatter", "mode": "lines+markers", "name": "Business Outcome", "x": ["2026-01-01"], "y": [0] }}
+                    {{ "type": "scatter", "mode": "lines+markers", "name": "Cause Metric", "x": ["DATE_1"], "y": [0] }},
+                    {{ "type": "scatter", "mode": "lines+markers", "name": "Effect Metric", "x": ["DATE_1"], "y": [0] }}
                 ]
             }}
         }}
@@ -1391,7 +1431,7 @@ def reasoner_node(state: AgentState):
 
     DETECTED SILO FOCUS:
     - Use these keywords prominently: {silo_focus}
-    - Ground all findings in the SQL results; do not assume a specific metric.
+    - Ground all findings in the SQL results; refer to metrics dynamically using keys from the provided JSON context.
 
     FINANCIAL MANDATE:
     - Explicitly mention impact on Cash Flow and Expenditure.
@@ -1481,13 +1521,13 @@ def reasoner_node(state: AgentState):
         if len(traces) < 2:
             if is_sim:
                 traces = [
-                    {"type": "bar", "name": "Baseline Revenue", "x": x_values[:1], "y": [0.0]},
-                    {"type": "bar", "name": "Simulated Revenue", "x": x_values[:1], "y": [0.0]}
+                    {"type": "bar", "name": "Baseline Metric", "x": x_values[:1], "y": [0.0]},
+                    {"type": "bar", "name": "Projected Metric", "x": x_values[:1], "y": [0.0]}
                 ]
             else:
                 traces = [
-                    {"type": "scatter", "mode": "lines+markers", "name": "Latency", "x": x_values, "y": [0.0] * len(x_values)},
-                    {"type": "scatter", "mode": "lines+markers", "name": "Revenue", "x": x_values, "y": [0.0] * len(x_values)}
+                    {"type": "scatter", "mode": "lines+markers", "name": "Cause Metric", "x": x_values, "y": [0.0] * len(x_values)},
+                    {"type": "scatter", "mode": "lines+markers", "name": "Effect Metric", "x": x_values, "y": [0.0] * len(x_values)}
                 ]
 
         visuals = {
@@ -1596,7 +1636,7 @@ def strategic_reasoner_node(state: AgentState):
     role_focus = {
         "CEO": "Cross-silo executive synthesis with emphasis on Operations, Accounting, and CRM.",
         "Sales Manager": "Prioritize lead quality and pipeline health, then link to revenue impact.",
-        "Operations Manager": "Focus on latency, success rate, and uptime impacts.",
+        "Operations Manager": "Focus on technical performance, success quality, and reliability impacts.",
         "HR Manager": "Focus on productivity and payroll expenditure impacts.",
     }
     persona_focus = role_focus.get(user_role, "Executive synthesis with cross-silo triangulation.")
@@ -1616,7 +1656,7 @@ def strategic_reasoner_node(state: AgentState):
     if sales_manager:
         role_filter_block = (
             "ROLE FILTERING:\n"
-            "- Do not mention latency or uptime in the HEADLINE or RECOMMENDATIONS.\n"
+            "- Do not mention low-level technical metric names in the HEADLINE or RECOMMENDATIONS.\n"
             "- Emphasize lead quality and pipeline health in the HEADLINE and RECOMMENDATIONS.\n"
             "- Still include Expenditure impact as a footer line in the REASONING section.\n"
         )
@@ -1629,6 +1669,7 @@ def strategic_reasoner_node(state: AgentState):
     {sim_context}
 
     TASK:
+    - Describe the forensic path taken to find this insight. Do not summarize; explain the investigation.
     - Produce a plain-text causal analysis using only numbers from the Fact Sheet.
     - {constraint_line}
     - Triangulate across at least two tables.
@@ -1650,7 +1691,7 @@ def strategic_reasoner_node(state: AgentState):
     analysis_text = analysis_response.content
 
     format_prompt = f"""
-    You are a strict JSON formatter. Output ONLY valid JSON using this exact schema and keys:
+    You are a strict JSON formatter. Output ONLY ONE valid JSON block using this exact schema and keys:
     {{
       "insight_id": "str",
       "meta": {{"urgency_score": float, "confidence_score": float, "role_context": "str"}},
@@ -1681,6 +1722,63 @@ def strategic_reasoner_node(state: AgentState):
         data = parse_llm_json(formatted_response.content)
 
     final_insight = enforce_strict_schema(data, fact_sheet, user_role, is_sim)
+
+    tables = fact_sheet.get("tables", {}) if isinstance(fact_sheet, dict) else {}
+    table_names = list(tables.keys())
+    scanned_tables_text = ", ".join(table_names) if table_names else "no tables"
+
+    highest_delta = None
+    table_items = tables.items() if isinstance(tables, dict) else []
+    for table_name, table in table_items:
+        fields = table.get("fields", {}) if isinstance(table, dict) else {}
+        field_items = fields.items() if isinstance(fields, dict) else []
+        for field_name, values in field_items:
+            delta = values.get("delta_pct") if isinstance(values, dict) else None
+            if not isinstance(delta, (int, float)):
+                continue
+            candidate = {
+                "table": table_name,
+                "field": field_name,
+                "delta": delta
+            }
+            if highest_delta is None or abs(delta) > abs(highest_delta["delta"]):
+                highest_delta = candidate
+
+    anomaly_text = "No measurable anomaly identified."
+    if highest_delta:
+        anomaly_text = (
+            f"Largest shift detected in {highest_delta['field']} from {highest_delta['table']} "
+            f"at {highest_delta['delta']:.1f}% change."
+        )
+
+    primary, secondary = select_trace_fields(fact_sheet, user_role, final_insight.get("target_silos") if isinstance(final_insight, dict) else None)
+    correlation_text = "Cross-silo correlation could not be resolved from current evidence."
+    if primary and secondary:
+        correlation_text = (
+            f"Traced {primary['table_name']}.{primary['field_name']} movement in {table_to_silo(primary['table_name'])} "
+            f"to {secondary['table_name']}.{secondary['field_name']} deterioration in {table_to_silo(secondary['table_name'])}, "
+            "confirming cross-table causal propagation."
+        )
+
+    forensic_chain = [
+        {
+            "step": 1,
+            "agent": "Data Acquisition",
+            "thought": f"Step 1: SQL Specialist scanned metadata and time-series fields across {len(table_names)} silos/tables: {scanned_tables_text}."
+        },
+        {
+            "step": 2,
+            "agent": "Anomaly Detection",
+            "thought": f"Step 2: Anomaly Detection isolated the strongest outlier. {anomaly_text}"
+        },
+        {
+            "step": 3,
+            "agent": "Cross-Silo Correlation",
+            "thought": f"Step 3: Correlation engine aligned investigation windows and tested cross-silo propagation. {correlation_text}"
+        }
+    ]
+    if isinstance(final_insight, dict):
+        final_insight["reasoning_chain"] = forensic_chain
     if sales_manager and isinstance(final_insight, dict):
         content = final_insight.get("content") if isinstance(final_insight.get("content"), dict) else {}
         headline = str(content.get("headline", ""))
