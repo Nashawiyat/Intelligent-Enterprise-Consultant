@@ -1,7 +1,7 @@
 """
 ICA – Home Page
 ===============
-Dashboard with insight cards + chatbot panel.
+Dashboard with insight cards + chatbot panel + context upload + Slack integration.
 This file is loaded by app.py via st.navigation().
 """
 
@@ -14,6 +14,13 @@ import time
 from datetime import datetime
 from theme import get_colors
 from streamlit_autorefresh import st_autorefresh
+from auth_utils import (
+    get_current_user,
+    init_context_state,
+    mock_upload_context,
+    init_slack_state,
+    mock_connect_slack,
+)
 
 # ──────────────────────────────────────────────
 # Backend config
@@ -53,6 +60,12 @@ CHART_GRID   = _c["CHART_GRID"]
 PANEL_SHADOW = _c["PANEL_SHADOW"]
 
 # ──────────────────────────────────────────────
+# Init extra state
+# ──────────────────────────────────────────────
+init_context_state()
+init_slack_state()
+
+# ──────────────────────────────────────────────
 # Page-specific CSS (content styling for home page)
 # ──────────────────────────────────────────────
 st.markdown(f"""
@@ -86,7 +99,8 @@ div[data-testid="stAppViewContainer"] > section > div {{
 
 /* === PANEL BORDERS === */
 [data-testid="stVerticalBlock"].st-key-insights_panel,
-[data-testid="stVerticalBlock"].st-key-chat_panel {{
+[data-testid="stVerticalBlock"].st-key-chat_panel,
+[data-testid="stVerticalBlock"].st-key-context_panel {{
     border: 3px solid {BORDER_STRONG} !important;
     border-radius: 16px !important;
     background: {CARD} !important;
@@ -269,14 +283,16 @@ div[data-testid="stAppViewContainer"] > section > div {{
 }}
 
 /* Primary button */
-button[data-testid="stBaseButton-primary"] {{
+button[data-testid="stBaseButton-primary"],
+button[data-testid="stBaseButton-primaryFormSubmit"] {{
     background: {ACCENT} !important;
     color: #ffffff !important;
     border: none !important;
     border-radius: 12px !important;
     font-weight: 600 !important;
 }}
-button[data-testid="stBaseButton-primary"]:hover {{
+button[data-testid="stBaseButton-primary"]:hover,
+button[data-testid="stBaseButton-primaryFormSubmit"]:hover {{
     opacity: 0.85 !important;
 }}
 
@@ -320,6 +336,52 @@ button[data-testid="stBaseButton-primary"]:hover {{
 [data-testid="stExpander"] summary span {{
     font-size: 0.78rem !important;
 }}
+
+/* === File uploader === */
+[data-testid="stFileUploader"] {{
+    background: {CARD_INNER} !important;
+    border: 1.5px dashed {BORDER} !important;
+    border-radius: 12px !important;
+    padding: 0.5rem !important;
+}}
+[data-testid="stFileUploader"] label p {{
+    color: {TEXT} !important;
+    font-weight: 500 !important;
+}}
+[data-testid="stFileUploader"] section {{
+    padding: 0.3rem !important;
+}}
+[data-testid="stFileUploader"] small {{
+    color: {TEXT2} !important;
+}}
+
+/* === Context upload badge === */
+.context-badge {{
+    display: inline-block;
+    background: {ACCENT_BG};
+    color: {ACCENT};
+    border-radius: 8px;
+    padding: 0.15rem 0.5rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    margin-bottom: 0.3rem;
+}}
+
+/* === Insight counter badge === */
+.insight-counter {{
+    display: inline-block;
+    background: {ACCENT};
+    color: #fff;
+    border-radius: 50%;
+    width: 22px;
+    height: 22px;
+    line-height: 22px;
+    text-align: center;
+    font-size: 0.7rem;
+    font-weight: 700;
+    margin-left: 0.3rem;
+    vertical-align: middle;
+}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -328,10 +390,15 @@ button[data-testid="stBaseButton-primary"]:hover {{
 # ──────────────────────────────────────────────
 if "active_insights" not in st.session_state:
     st.session_state.active_insights = []
+if "seen_insight_ids" not in st.session_state:
+    st.session_state.seen_insight_ids = set()
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "selected_role" not in st.session_state:
-    st.session_state.selected_role = "CEO"
+    # Default role from logged-in user's title if available
+    user = get_current_user()
+    default_role = user.get("title", "CEO") if user else "CEO"
+    st.session_state.selected_role = default_role if default_role in ROLES else "CEO"
 if "selected_domain" not in st.session_state:
     st.session_state.selected_domain = "Sales"
 if "last_insight_fetch" not in st.session_state:
@@ -370,6 +437,26 @@ def fetch_insights(domain: str, role: str) -> list[dict]:
     except Exception as e:
         st.session_state.insight_error = f"Error fetching insights: {e}"
         return []
+
+
+def accumulate_insights(new_insights: list[dict]):
+    """
+    Append new insights to st.session_state.active_insights,
+    deduplicating by insight_id. Keeps most recent version of each insight.
+    """
+    existing_ids = {i["insight_id"] for i in st.session_state.active_insights if "insight_id" in i}
+
+    for insight in new_insights:
+        iid = insight.get("insight_id")
+        if not iid:
+            # Generate a fallback ID from content hash
+            iid = str(hash(json.dumps(insight.get("content", {}), sort_keys=True)))
+            insight["insight_id"] = iid
+
+        if iid not in existing_ids:
+            st.session_state.active_insights.append(insight)
+            existing_ids.add(iid)
+            st.session_state.seen_insight_ids.add(iid)
 
 
 def send_chat_message(message: str, domain: str, role: str) -> str:
@@ -444,15 +531,21 @@ def render_plotly(visuals: dict, key: str):
 # ──────────────────────────────────────────────
 # TOP BAR – ICA + Role/Domain selectors + Light/Dark toggle
 # ──────────────────────────────────────────────
+current_user = get_current_user()
+user_greeting = ""
+if current_user:
+    user_greeting = f"  ·  Welcome, {current_user.get('display_name', current_user['username'])}"
+
 top_brand, top_domain, top_role, top_toggle = st.columns([3, 2, 2, 2])
 with top_brand:
-    st.markdown(f'<div class="topbar-brand">🔬 Intelligent Consultant Agent</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="topbar-brand">🔬 Intelligent Consultant Agent<span style="font-size:0.72rem;color:{TEXT2};font-weight:400;">{user_greeting}</span></div>', unsafe_allow_html=True)
 with top_domain:
     domain_idx = DOMAINS.index(st.session_state.selected_domain) if st.session_state.selected_domain in DOMAINS else 0
     new_domain = st.selectbox("Domain", DOMAINS, index=domain_idx, key="domain_select", label_visibility="collapsed")
     if new_domain != st.session_state.selected_domain:
         st.session_state.selected_domain = new_domain
         st.session_state.active_insights = []
+        st.session_state.seen_insight_ids = set()
         st.session_state.last_insight_fetch = 0.0
         st.rerun()
 with top_role:
@@ -461,6 +554,7 @@ with top_role:
     if new_role != st.session_state.selected_role:
         st.session_state.selected_role = new_role
         st.session_state.active_insights = []
+        st.session_state.seen_insight_ids = set()
         st.session_state.last_insight_fetch = 0.0
         st.rerun()
 with top_toggle:
@@ -470,14 +564,14 @@ with top_toggle:
         st.rerun()
 
 # ──────────────────────────────────────────────
-# Auto-refresh insights every INSIGHT_REFRESH_INTERVAL seconds
+# Auto-refresh insights — ACCUMULATE, don't overwrite
 # ──────────────────────────────────────────────
 now = time.time()
 if now - st.session_state.last_insight_fetch >= INSIGHT_REFRESH_INTERVAL:
     st.session_state.insight_error = None
     fresh = fetch_insights(st.session_state.selected_domain, st.session_state.selected_role)
     if fresh:
-        st.session_state.active_insights = fresh
+        accumulate_insights(fresh)  # ← key change: append + deduplicate
     st.session_state.last_insight_fetch = now
 
 # ──────────────────────────────────────────────
@@ -490,6 +584,14 @@ with main_col:
     panel = st.container(border=True, key="insights_panel")
     with panel:
         insights = st.session_state.active_insights
+        count = len(insights)
+
+        # Header with counter
+        st.markdown(
+            f'<div class="panel-header">📊 Active Insights'
+            f'<span class="insight-counter">{count}</span></div>',
+            unsafe_allow_html=True,
+        )
 
         # Show error banner if backend unreachable
         if st.session_state.insight_error:
@@ -499,7 +601,7 @@ with main_col:
             if not st.session_state.insight_error:
                 st.info(f"Fetching insights for **{st.session_state.selected_domain}** as **{st.session_state.selected_role}**…")
         else:
-            scroll = st.container(height=560)
+            scroll = st.container(height=520)
             with scroll:
                 # Backend may return a single insight — always iterate as list
                 for row_start in range(0, len(insights), 2):
@@ -519,6 +621,9 @@ with main_col:
                                 urg_lbl = "High" if urgency >= 0.8 else ("Med" if urgency >= 0.5 else "Low")
                                 conf = int(meta.get("confidence_score", 0) * 100)
 
+                                gen_time = meta.get("generated_at", "")
+                                domain_tag = meta.get("domain", st.session_state.selected_domain)
+
                                 # Top row: meta tags + dismiss button (top-right)
                                 meta_col, dismiss_col = st.columns([5, 1])
                                 with meta_col:
@@ -526,6 +631,7 @@ with main_col:
                                     <div style="margin-bottom:0.3rem;">
                                         <span class="meta-tag {urg_cls}">{urg_lbl}</span>
                                         <span class="meta-tag">🎯 {conf}%</span>
+                                        <span class="meta-tag">{domain_tag}</span>
                                     </div>
                                     """, unsafe_allow_html=True)
                                 with dismiss_col:
@@ -555,6 +661,86 @@ with main_col:
                                     with st.expander("💡 Reasoning", expanded=False):
                                         for step in chain:
                                             st.markdown(f"**{step['step']}.** *{step['agent']}* – {step['thought']}")
+
+    # ── Context Upload & Integrations panel (below insights) ──
+    with st.container(border=True, key="context_panel"):
+        ctx_col1, ctx_col2, ctx_col3 = st.columns([2, 2, 1.5], gap="medium")
+
+        # — File Upload —
+        with ctx_col1:
+            st.markdown(f'<div class="panel-header">📎 Upload Context</div>', unsafe_allow_html=True)
+
+            uploaded_file = st.file_uploader(
+                "Upload PDF or CSV",
+                type=["pdf", "csv"],
+                key="context_file_uploader",
+                label_visibility="collapsed",
+            )
+            file_desc = st.text_input(
+                "Description (optional)",
+                placeholder="e.g. Q4 Sales Report",
+                key="context_file_desc",
+                label_visibility="collapsed",
+            )
+
+            if uploaded_file:
+                if st.button("📤 Upload & Index", key="upload_ctx_btn", type="primary"):
+                    file_bytes = uploaded_file.read()
+                    result = mock_upload_context(
+                        file_name=uploaded_file.name,
+                        file_bytes=file_bytes,
+                        domain=st.session_state.selected_domain,
+                        description=file_desc,
+                    )
+                    st.toast(f"Uploaded: {result['filename']} ({result['size_kb']} KB)", icon="✅")
+                    st.rerun()
+
+            # Show uploaded files
+            if st.session_state.uploaded_files:
+                st.markdown(f'<div style="font-size:0.75rem;color:{TEXT2};margin-top:0.3rem;">Recently uploaded:</div>', unsafe_allow_html=True)
+                for f in st.session_state.uploaded_files[-3:]:
+                    st.markdown(
+                        f'<span class="context-badge">📄 {f["filename"]} · {f["domain"]} · {f["size_kb"]}KB</span>',
+                        unsafe_allow_html=True,
+                    )
+
+        # — Slack Integration —
+        with ctx_col2:
+            st.markdown(f'<div class="panel-header">💬 Slack Integration</div>', unsafe_allow_html=True)
+
+            if st.session_state.slack_connected:
+                cfg = st.session_state.slack_config
+                st.success(f"Connected to {cfg['channel']} since {cfg['connected_at']}")
+                if st.button("Disconnect", key="slack_disconnect_btn"):
+                    st.session_state.slack_connected = False
+                    st.session_state.slack_config = None
+                    st.rerun()
+            else:
+                with st.form("slack_form"):
+                    webhook = st.text_input("Webhook URL", placeholder="https://hooks.slack.com/services/...", key="slack_webhook")
+                    channel = st.text_input("Channel", value="#insights", key="slack_channel")
+                    notify = st.selectbox("Notify on", ["high_urgency", "all"], key="slack_notify")
+                    slack_submit = st.form_submit_button("Connect Slack", type="primary", use_container_width=True)
+
+                    if slack_submit:
+                        if webhook.strip():
+                            mock_connect_slack(webhook.strip(), channel.strip(), notify)
+                            st.toast("Slack connected!", icon="✅")
+                            st.rerun()
+                        else:
+                            st.error("Webhook URL required.")
+
+        # — Quick Stats —
+        with ctx_col3:
+            st.markdown(f'<div class="panel-header">📈 Session Stats</div>', unsafe_allow_html=True)
+            st.markdown(f"""
+            <div style="font-size:0.8rem;line-height:2;color:{TEXT2};">
+                Insights collected: <b style="color:{ACCENT};">{len(st.session_state.active_insights)}</b><br>
+                Files uploaded: <b style="color:{ACCENT};">{len(st.session_state.uploaded_files)}</b><br>
+                Chat messages: <b style="color:{ACCENT};">{len(st.session_state.chat_history)}</b><br>
+                Slack: <b style="color:{ACCENT};">{"Connected" if st.session_state.slack_connected else "Not connected"}</b>
+            </div>
+            """, unsafe_allow_html=True)
 
 
 # ── RIGHT: Chatbot panel ──

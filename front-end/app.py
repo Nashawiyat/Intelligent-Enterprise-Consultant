@@ -7,12 +7,24 @@ Run with:
     streamlit run app.py
 
 Pages:
-  • home.py       – Dashboard with insight cards + chatbot
-  • simulation.py – Simulation sandbox
+  • home.py          – Dashboard with insight cards + chatbot
+  • simulation.py    – Simulation sandbox
+  • admin_pages.py   – Admin user management (admin-only)
+
+Authentication:
+  Mocked via auth_utils.py — see API_CONTRACT.md for the real endpoints.
 """
 
 import streamlit as st
 from theme import get_colors
+from auth_utils import (
+    init_auth_state,
+    is_authenticated,
+    is_admin,
+    get_current_user,
+    mock_login,
+    logout,
+)
 
 # ──────────────────────────────────────────────
 # Page config (must be the very first Streamlit command)
@@ -25,12 +37,9 @@ st.set_page_config(
 )
 
 # ──────────────────────────────────────────────
-# Navigation pages (hidden default nav — we use custom sidebar buttons)
+# Auth state
 # ──────────────────────────────────────────────
-home_page = st.Page("home.py", title="Home", icon="🏠", default=True)
-sim_page = st.Page("simulation.py", title="Simulation", icon="📊")
-
-pg = st.navigation([home_page, sim_page], position="hidden")
+init_auth_state()
 
 # ──────────────────────────────────────────────
 # Theme state
@@ -50,6 +59,132 @@ ACCENT   = _c["ACCENT"];   ACCENT_BG    = _c["ACCENT_BG"]
 SIDEBAR_BG = _c["SIDEBAR_BG"]
 HOVER_BG = _c["HOVER_BG"]
 TOGGLE_BG = _c["TOGGLE_BG"]; TOGGLE_CHECKED = _c["TOGGLE_CHECKED"]
+
+# ──────────────────────────────────────────────
+# LOGIN SCREEN  (shown when not authenticated)
+# ──────────────────────────────────────────────
+if not is_authenticated():
+    # Hide sidebar completely on login page
+    st.markdown("""
+    <style>
+    section[data-testid="stSidebar"] { display: none !important; }
+    [data-testid="collapsedControl"] { display: none !important; }
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    </style>
+    """, unsafe_allow_html=True)
+
+    # Centred login card
+    st.markdown(f"""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    html, body, [class*="css"] {{ font-family: 'Inter', sans-serif; }}
+    html, body,
+    [data-testid="stAppViewContainer"],
+    [data-testid="stMain"],
+    .main, .block-container {{
+        background-color: {BG} !important;
+        color: {TEXT} !important;
+    }}
+    .login-logo {{
+        text-align: center;
+        font-size: 3rem;
+        margin-bottom: 0.2rem;
+        margin-top: 6vh;
+    }}
+    .login-title {{
+        text-align: center;
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: {ACCENT};
+        margin-bottom: 0.1rem;
+    }}
+    .login-subtitle {{
+        text-align: center;
+        font-size: 0.85rem;
+        color: {TEXT2};
+        margin-bottom: 1.5rem;
+    }}
+    /* Style inputs */
+    [data-testid="stTextInput"] input {{
+        background: {BG2} !important;
+        color: {TEXT} !important;
+        border: 1.5px solid {BORDER} !important;
+        border-radius: 10px !important;
+    }}
+    [data-testid="stTextInput"] label p {{
+        color: {TEXT} !important;
+        font-weight: 500 !important;
+    }}
+    /* Form container */
+    [data-testid="stForm"] {{
+        background: {CARD} !important;
+        border: 2px solid {BORDER_STRONG} !important;
+        border-radius: 20px !important;
+        padding: 1.5rem !important;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.25) !important;
+    }}
+    /* Primary button inside form */
+    [data-testid="stForm"] button[data-testid="stBaseButton-primaryFormSubmit"] {{
+        background: {ACCENT} !important;
+        color: #ffffff !important;
+        border: none !important;
+        border-radius: 12px !important;
+        font-weight: 600 !important;
+        padding: 0.5rem 1rem !important;
+        margin-top: 0.5rem !important;
+    }}
+    [data-testid="stForm"] button[data-testid="stBaseButton-primaryFormSubmit"]:hover {{
+        opacity: 0.85 !important;
+    }}
+    /* Caption */
+    .stCaption, [data-testid="stCaption"] {{
+        color: {TEXT2} !important;
+    }}
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown('<div class="login-logo">🔬</div>', unsafe_allow_html=True)
+    st.markdown('<div class="login-title">Intelligent Enterprise Consultant</div>', unsafe_allow_html=True)
+    st.markdown('<div class="login-subtitle">Sign in to access your dashboard</div>', unsafe_allow_html=True)
+
+    # Form
+    col_l, col_form, col_r = st.columns([1, 2, 1])
+    with col_form:
+        with st.form("login_form"):
+            username = st.text_input("Username", placeholder="admin / user / cfo / cto")
+            password = st.text_input("Password", type="password", placeholder="same as username")
+            submitted = st.form_submit_button("Sign In", type="primary", use_container_width=True)
+
+            if submitted:
+                if mock_login(username.strip(), password.strip()):
+                    st.rerun()
+                else:
+                    st.error(st.session_state.login_error)
+
+        st.caption("Demo credentials: `admin`/`admin` · `user`/`user` · `cfo`/`cfo` · `cto`/`cto`")
+
+    st.stop()  # ← nothing below runs until authenticated
+
+# ══════════════════════════════════════════════
+# AUTHENTICATED — build navigation & shared CSS
+# ══════════════════════════════════════════════
+
+# ──────────────────────────────────────────────
+# Navigation pages
+# ──────────────────────────────────────────────
+home_page = st.Page("home.py", title="Home", icon="🏠", default=True)
+sim_page = st.Page("simulation.py", title="Simulation", icon="📊")
+
+nav_pages = [home_page, sim_page]
+
+# Add admin page if current user is admin
+if is_admin():
+    admin_page = st.Page("admin_pages.py", title="Admin", icon="⚙️")
+    nav_pages.append(admin_page)
+
+pg = st.navigation(nav_pages, position="hidden")
 
 # ──────────────────────────────────────────────
 # CSS – shared across all pages (sidebar, toggle, global controls)
@@ -303,6 +438,7 @@ label[data-testid="stWidgetLabel"] p {{
 # ──────────────────────────────────────────────
 # SIDEBAR – shared navigation across all pages
 # ──────────────────────────────────────────────
+current_user = get_current_user()
 with st.sidebar:
     # Logo
     st.markdown("""
@@ -319,11 +455,29 @@ with st.sidebar:
     if st.button("📊   Simulation", key="nav_Simulation"):
         st.switch_page(sim_page)
 
-    # Account button – pushed to bottom via CSS
+    # Admin nav (only for admins)
+    if is_admin():
+        if st.button("⚙️   Admin", key="nav_Admin"):
+            st.switch_page(admin_page)
+
+    # Account section – pushed to bottom via CSS
     with st.container(key="account_section"):
         st.markdown("---")
-        if st.button("👤   Account", key="account"):
-            st.toast("Account – coming soon!", icon="👤")
+
+        # Show current user info
+        if current_user:
+            display = current_user.get("display_name", current_user["username"])
+            role_badge = current_user.get("title", current_user.get("role", ""))
+            st.markdown(f"""
+            <div style="font-size:0.72rem;color:{TEXT2};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                👤 {display}<br>
+                <span style="font-size:0.65rem;color:{ACCENT};">{role_badge}</span>
+            </div>
+            """, unsafe_allow_html=True)
+
+        if st.button("🚪   Logout", key="logout_btn"):
+            logout()
+            st.rerun()
 
 # ──────────────────────────────────────────────
 # Run the selected page

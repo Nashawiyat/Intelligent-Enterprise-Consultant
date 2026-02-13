@@ -2,3 +2,4 @@ streamlit
 plotly
 requests
 streamlit-autorefresh
+pandas
