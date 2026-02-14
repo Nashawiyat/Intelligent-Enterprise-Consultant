@@ -1,5 +1,5 @@
 from jose import jwt
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 import os
 
@@ -13,7 +13,7 @@ except Exception as e:
 def generateToken(username):
     payload = {
         "sub": username,
-        "exp": datetime.now(datetime.timezone.utc) + timedelta(minutes=60) 
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=60) 
     }
 
     token = jwt.encode(payload, SECRET_KEY, ALGORITHM)

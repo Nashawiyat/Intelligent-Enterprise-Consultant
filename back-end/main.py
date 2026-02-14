@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 import os
 import asyncio
 
-from db_helper_functions import init_db, close_db, recordInsight, getLatestInsightRecordFromDB, createUser, getUserHash, getUserDetails, loginUser
+from db_helper_functions import init_db, close_db, recordInsight, getLatestInsightRecordFromDB, createUser, getUserHash, getUserDetails
 from helper_classes import LoginRequest, PromptRequest, InsightRequest, BaseSimulationRequest, RegistrationRequest
 from hashing import hash_password, verify_hash
 from token_cryptography import generateToken
@@ -170,14 +170,13 @@ async def getPrompt(data: PromptRequest, current_user: str = Depends(getUserFrom
     return json_result
 
 @app.post("/auth/login")
-async def login(data: LoginRequest, current_user: str = Depends(getUserFromToken)):
+async def login(data: LoginRequest):
     recorded_hash = getUserHash(data.username)
     if recorded_hash is None:
         return {"detail": "User does not exist"}
     
     if verify_hash(data.password, recorded_hash[0]):
         token = generateToken(data.username)
-        loginUser(data.username, token)
         return {
             "token": token,
             "user": getUserDetails(data.username)
@@ -185,11 +184,8 @@ async def login(data: LoginRequest, current_user: str = Depends(getUserFromToken
     else:
         return {"detail": "Invalid credentials"}
 
-
-# , current_user: str = Depends(admin_access_required)
 @app.post("/admin/users")
-async def addNewUser(data: RegistrationRequest):
-    print("\n\nPASSWORD: ", data.password, f"Len: {len(data.password)}\n\n")
+async def addNewUser(data: RegistrationRequest, current_user: str = Depends(admin_access_required)):
     hashed = hash_password(data.password)
     data_dict = data.__dict__
     del data_dict['password']

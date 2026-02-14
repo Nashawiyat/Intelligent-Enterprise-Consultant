@@ -10,11 +10,9 @@ def getUserFromToken(session_token: Annotated[str | None, Header()] = None):
             detail="User token not valid. User may be logged out.",
             status_code=401
         )
-    print("LOG: decoded[\"sub\"]: ", decoded["sub"])
     return decoded["sub"]
 
 def admin_access_required(username: str = Depends(getUserFromToken)):
-    print("USERNAME: ", username)
     if not isModeAdmin(username):
         raise HTTPException(
             detail="Admin priviledge required. Access denied.",

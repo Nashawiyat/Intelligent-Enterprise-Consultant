@@ -27,9 +27,7 @@ def getLatestInsightRecordFromDB(domain: str):
 def createUser(username, hashed, display_name, mode, department, role):
     data = (username, hashed, display_name, mode, department, role)
     cursor.execute(
-        "INSERT INTO Users " \
-        "(username, hash, display_name, mode, department, role)" \
-        "(?, ?, ?, ?, ?, ?)", data)
+        "INSERT INTO Users (username, hash, display_name, mode, department, role) VALUES (?, ?, ?, ?, ?, ?)", data)
     conn.commit()
 
 def getUserHash(username):
@@ -46,13 +44,12 @@ def getUserDetails(username):
         "title": result[3]
     }
 
-def loginUser(username, token, mode):
-    data = (username, token, mode)
-    cursor.execute("INSERT INTO SessionTokens VALUES (?, ?, ?)", data)
-    conn.commit()
+# def loginUser(username, token):
+#     data = (username, token, mode)
+#     cursor.execute("INSERT INTO SessionTokens VALUES (?, ?, ?)", data)
+#     conn.commit()
 
 def isModeAdmin(username):
-    print("\n\nDB USERNAME: \n\n", username)
     result = cursor.execute("SELECT mode FROM Users WHERE username = ?", (username,)).fetchone()
     if result is None:
         raise Exception(f"Mode not found for username. Does {username} exist?")
