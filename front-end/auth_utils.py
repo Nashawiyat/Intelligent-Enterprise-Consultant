@@ -1,8 +1,10 @@
 """
 ICA – Authentication Utilities
 ================================
-Mocked auth logic for demo. Will be replaced with real API calls
-once the backend implements POST /auth/login, GET/POST /admin/users.
+Real backend integration with mock fallback for demo resilience.
+Backend endpoints: POST /auth/login, GET /admin/users, POST /admin/users,
+DELETE /admin/users/{username}, PATCH /admin/users/batch,
+POST /context/upload, POST /integrations/slack/connect.
 
 See API_CONTRACT.md for the expected JSON payloads.
 """
@@ -34,24 +36,17 @@ def _normalize_backend_user(user_dict: dict) -> dict:
     """
     Normalize a user dict from the backend to the frontend's internal naming.
 
-    Backend DB uses 'mode' (admin/user) and 'role' (job title).
-    Backend getUserDetails() currently returns 'role' (=mode) and 'title' (=role).
-    The frontend internally uses 'role' (admin/user) and 'title' (job title).
-
-    This function handles BOTH possible backend response shapes:
-      - {mode, role}  → frontend {role: mode, title: role}
-      - {role, title}  → frontend {role, title} (already correct)
+    Backend DB columns: mode (admin/user), role (job title).
+    Backend returns:    {username, display_name, mode, role, department}.
+    Frontend uses:      {username, display_name, role (admin/user), title (job title), department}.
     """
     out = dict(user_dict)
-    # If backend sends 'mode' field, map it to frontend 'role'
     if "mode" in out:
-        out["role"] = out.pop("mode")
-    # If backend sends 'role' for job title (when 'title' is absent),
-    # and we already have 'role' set from 'mode', then 'role' in the
-    # original dict is the job title → put it in 'title'.
-    # But if 'title' already exists, leave it.
-    if "title" not in out and "role" in user_dict and "mode" in user_dict:
-        out["title"] = user_dict["role"]
+        backend_mode = out.pop("mode")          # "admin" or "user"
+        backend_role = out.pop("role", "")       # job title like "Admin", "CEO"
+        out["role"] = backend_mode               # frontend 'role' = permission level
+        out["title"] = backend_role              # frontend 'title' = job title
+    out.setdefault("title", "")
     return out
 
 
@@ -147,28 +142,31 @@ def mock_login(username: str, password: str) -> bool:
             json={"username": username, "password": password},
             timeout=10,
         )
-        data = resp.json()
 
-        # Backend returns {token, user} on success, {detail} on failure
-        if "token" in data and "user" in data:
-            user = _normalize_backend_user(data["user"])
-            st.session_state.authenticated = True
-            st.session_state.auth_token = data["token"]
-            st.session_state.current_user = {
-                "username": user.get("username", username),
-                "display_name": user.get("display_name", username),
-                "role": user.get("role", "user"),
-                "department": user.get("department", ""),
-                "title": user.get("title", ""),
-            }
-            st.session_state.login_error = None
-            # Sync into local users_db so admin page can list this user
-            _sync_user_to_local_db(st.session_state.current_user)
-            return True
-        else:
-            # Backend returned an error (e.g. {"detail": "Invalid credentials"})
+        if resp.status_code == 200:
+            data = resp.json()
+            if "token" in data and "user" in data:
+                user = _normalize_backend_user(data["user"])
+                st.session_state.authenticated = True
+                st.session_state.auth_token = data["token"]
+                st.session_state.current_user = {
+                    "username": user.get("username", username),
+                    "display_name": user.get("display_name", username),
+                    "role": user.get("role", "user"),
+                    "department": user.get("department", ""),
+                    "title": user.get("title", ""),
+                }
+                st.session_state.login_error = None
+                _sync_user_to_local_db(st.session_state.current_user)
+                return True
+
+        # Non-200 response (401, etc.)
+        try:
+            data = resp.json()
             st.session_state.login_error = data.get("detail", "Invalid username or password.")
-            return False
+        except Exception:
+            st.session_state.login_error = f"Login failed (HTTP {resp.status_code})"
+        return False
 
     except requests.exceptions.ConnectionError:
         # Backend unreachable — fall back to mock
@@ -218,8 +216,25 @@ def logout():
 # User management (mocked, admin-only)
 # ──────────────────────────────────────────────
 def get_all_users() -> list[dict]:
-    """Return user list (without passwords)."""
+    """Return user list (without passwords). Tries GET /admin/users first."""
     init_auth_state()
+
+    try:
+        resp = requests.get(
+            f"{BACKEND_BASE_URL}/admin/users",
+            headers=_get_auth_headers(),
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            users = data.get("users", [])
+            return [_normalize_backend_user(u) for u in users]
+    except requests.exceptions.ConnectionError:
+        pass
+    except Exception:
+        pass
+
+    # Fallback to local session DB
     return [
         {k: v for k, v in u.items() if k != "password"}
         for u in st.session_state.users_db
@@ -303,8 +318,29 @@ def create_user(
 
 
 def delete_user(username: str) -> tuple[bool, str]:
-    """Delete a user from the mock DB."""
+    """Delete a user. Tries DELETE /admin/users/{username} first."""
     init_auth_state()
+
+    try:
+        resp = requests.delete(
+            f"{BACKEND_BASE_URL}/admin/users/{username}",
+            headers=_get_auth_headers(),
+            timeout=10,
+        )
+        data = resp.json()
+        if resp.status_code == 200:
+            # Also remove from local session DB
+            st.session_state.users_db = [
+                u for u in st.session_state.users_db if u["username"] != username
+            ]
+            return True, data.get("detail", f"User '{username}' deleted.")
+        return False, data.get("detail", f"Backend error ({resp.status_code})")
+    except requests.exceptions.ConnectionError:
+        pass
+    except Exception:
+        pass
+
+    # Fallback to local mock DB
     if username == "admin":
         return False, "Cannot delete the default admin account."
     before = len(st.session_state.users_db)
@@ -317,18 +353,63 @@ def delete_user(username: str) -> tuple[bool, str]:
 
 
 def get_all_users_with_passwords() -> list[dict]:
-    """Return full user list *including* passwords (admin-only, for data_editor)."""
+    """
+    Return full user list for admin data_editor.
+    Backend never returns real passwords — we use PASSWORD_MASK.
+    """
     init_auth_state()
+
+    try:
+        resp = requests.get(
+            f"{BACKEND_BASE_URL}/admin/users",
+            headers=_get_auth_headers(),
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            users = []
+            for u in data.get("users", []):
+                nu = _normalize_backend_user(u)
+                nu["password"] = PASSWORD_MASK
+                users.append(nu)
+            return users
+    except requests.exceptions.ConnectionError:
+        pass
+    except Exception:
+        pass
+
+    # Fallback
     return [dict(u) for u in st.session_state.users_db]
 
 
 def search_user_by_username(username: str) -> list[dict]:
     """
-    Mock for GET /admin/users?search_username=<string>.
-    Case-insensitive but whitespace-sensitive exact match.
-    Returns a list with 0 or 1 matching users (with passwords for data_editor).
+    Search for a user by username. Tries GET /admin/users?search_username=.
+    Returns list of matching users (with PASSWORD_MASK for passwords).
     """
     init_auth_state()
+
+    try:
+        resp = requests.get(
+            f"{BACKEND_BASE_URL}/admin/users",
+            params={"search_username": username},
+            headers=_get_auth_headers(),
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            users = []
+            for u in data.get("users", []):
+                nu = _normalize_backend_user(u)
+                nu["password"] = PASSWORD_MASK
+                users.append(nu)
+            return users
+    except requests.exceptions.ConnectionError:
+        pass
+    except Exception:
+        pass
+
+    # Fallback to local mock
     target = username.lower()
     for u in st.session_state.users_db:
         if u["username"].lower() == target:
@@ -344,19 +425,66 @@ def batch_update_users(
     deletes: list[str],
 ) -> tuple[int, int, list[str]]:
     """
-    Apply batch edits + deletes to st.session_state.users_db.
+    Apply batch edits + deletes. Tries PATCH /admin/users/batch first.
     `updates` – list of dicts with at least "username" and any changed fields.
                 Password field: value == PASSWORD_MASK means *unchanged*.
     `deletes` – list of usernames to remove.
     Returns (updated_count, deleted_count, errors).
-    In production this calls PATCH /admin/users/batch.
     """
     init_auth_state()
+
+    # Build backend-compatible payload
+    backend_updates = []
+    for upd in updates:
+        item = {"username": upd["username"]}
+        if "display_name" in upd:
+            item["display_name"] = upd["display_name"]
+        if "role" in upd:
+            item["mode"] = upd["role"]        # frontend role → backend mode
+        if "department" in upd:
+            item["department"] = upd["department"]
+        if "title" in upd:
+            item["role"] = upd["title"]       # frontend title → backend role
+        pw = upd.get("password", PASSWORD_MASK)
+        if pw != PASSWORD_MASK and pw.strip():
+            item["password"] = pw
+        backend_updates.append(item)
+
+    try:
+        resp = requests.patch(
+            f"{BACKEND_BASE_URL}/admin/users/batch",
+            json={"updates": backend_updates, "deletes": deletes},
+            headers=_get_auth_headers(),
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            updated_count = len(data.get("updated", []))
+            deleted_count = len(data.get("deleted", []))
+            errors = data.get("errors", [])
+            # Sync local session DB: remove deleted users
+            for uname in data.get("deleted", []):
+                st.session_state.users_db = [
+                    u for u in st.session_state.users_db if u["username"] != uname
+                ]
+            return updated_count, deleted_count, errors
+        else:
+            detail = "Backend error"
+            try:
+                detail = resp.json().get("detail", detail)
+            except Exception:
+                pass
+            return 0, 0, [f"{detail} ({resp.status_code})"]
+    except requests.exceptions.ConnectionError:
+        pass
+    except Exception:
+        pass
+
+    # ── Fallback: local mock ──
     errors: list[str] = []
     updated = 0
     deleted = 0
 
-    # --- Deletes ---
     protected = {"admin"}
     for uname in deletes:
         if uname in protected:
@@ -371,7 +499,6 @@ def batch_update_users(
         else:
             errors.append(f"User '{uname}' not found for deletion.")
 
-    # --- Updates ---
     user_map = {u["username"]: u for u in st.session_state.users_db}
     for upd in updates:
         uname = upd.get("username")
@@ -384,7 +511,6 @@ def batch_update_users(
             if field in upd and upd[field] != target.get(field):
                 target[field] = upd[field]
                 changed = True
-        # Password: only update if not masked
         pw = upd.get("password", PASSWORD_MASK)
         if pw != PASSWORD_MASK and pw.strip():
             target["password"] = pw
@@ -406,10 +532,38 @@ def init_context_state():
 
 def mock_upload_context(file_name: str, file_bytes: bytes, domain: str, description: str = "") -> dict:
     """
-    Mock file upload; stores metadata in session_state.
-    In production, this calls POST /context/upload (multipart).
+    Upload a context file. Tries POST /context/upload first.
+    Falls back to local mock if backend is down.
     """
     init_context_state()
+
+    try:
+        files = {"file": (file_name, file_bytes)}
+        resp = requests.post(
+            f"{BACKEND_BASE_URL}/context/upload",
+            files=files,
+            headers=_get_auth_headers(),
+            timeout=30,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            entry = {
+                "file_id": uuid.uuid4().hex[:8],
+                "filename": data.get("filename", file_name),
+                "domain": domain,
+                "description": description,
+                "size_kb": round(data.get("size", len(file_bytes)) / 1024, 1),
+                "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "status": "processed",
+            }
+            st.session_state.uploaded_files.append(entry)
+            return entry
+    except requests.exceptions.ConnectionError:
+        pass
+    except Exception:
+        pass
+
+    # Fallback: local mock
     entry = {
         "file_id": uuid.uuid4().hex[:8],
         "filename": file_name,
@@ -435,10 +589,32 @@ def init_slack_state():
 
 def mock_connect_slack(webhook_url: str, channel: str, notify_on: str = "high_urgency") -> dict:
     """
-    Mock Slack connection.
-    In production, calls POST /integrations/slack/connect.
+    Connect Slack integration. Tries POST /integrations/slack/connect first.
     """
     init_slack_state()
+
+    try:
+        resp = requests.post(
+            f"{BACKEND_BASE_URL}/integrations/slack/connect",
+            json={"webhook_url": webhook_url},
+            headers=_get_auth_headers(),
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            st.session_state.slack_connected = True
+            st.session_state.slack_config = {
+                "webhook_url": webhook_url,
+                "channel": channel,
+                "notify_on": notify_on,
+                "connected_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            }
+            return {"status": "connected", "channel": channel}
+    except requests.exceptions.ConnectionError:
+        pass
+    except Exception:
+        pass
+
+    # Fallback: local mock
     st.session_state.slack_connected = True
     st.session_state.slack_config = {
         "webhook_url": webhook_url,

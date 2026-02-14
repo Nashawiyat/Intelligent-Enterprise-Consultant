@@ -1,10 +1,19 @@
-from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi import FastAPI, HTTPException, Request, Depends, UploadFile, File, Form, Query
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 import os
+import json
 import asyncio
 
-from db_helper_functions import init_db, close_db, recordInsight, getLatestInsightRecordFromDB, createUser, getUserHash, getUserDetails
-from helper_classes import LoginRequest, PromptRequest, InsightRequest, BaseSimulationRequest, RegistrationRequest
+from db_helper_functions import (
+    init_db, close_db, recordInsight, getLatestInsightRecordFromDB,
+    createUser, getUserHash, getUserDetails, getUserByUsername,
+    getAllUsers, updateUser, deleteUser, countAdmins,
+)
+from helper_classes import (
+    LoginRequest, PromptRequest, InsightRequest, BaseSimulationRequest,
+    RegistrationRequest, BatchUpdateRequest, SlackConnectRequest,
+)
 from hashing import hash_password, verify_hash
 from token_cryptography import generateToken
 from access_validation import admin_access_required, getUserFromToken
@@ -173,7 +182,7 @@ async def getPrompt(data: PromptRequest, current_user: str = Depends(getUserFrom
 async def login(data: LoginRequest):
     recorded_hash = getUserHash(data.username)
     if recorded_hash is None:
-        return {"detail": "User does not exist"}
+        raise HTTPException(status_code=401, detail="User does not exist")
     
     if verify_hash(data.password, recorded_hash[0]):
         token = generateToken(data.username)
@@ -182,10 +191,15 @@ async def login(data: LoginRequest):
             "user": getUserDetails(data.username)
         }
     else:
-        return {"detail": "Invalid credentials"}
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
 @app.post("/admin/users")
 async def addNewUser(data: RegistrationRequest, current_user: str = Depends(admin_access_required)):
+    # Check if user already exists
+    existing = getUserByUsername(data.username)
+    if existing:
+        raise HTTPException(status_code=409, detail=f"User '{data.username}' already exists")
+
     hashed = hash_password(data.password)
     data_dict = data.__dict__
     del data_dict['password']
@@ -196,3 +210,158 @@ async def addNewUser(data: RegistrationRequest, current_user: str = Depends(admi
         "detail": f"User {data.username} created",
         "user": getUserDetails(data.username)
     }
+
+
+# ──────────────────────────────────────────────
+#  Admin – list / search users
+# ──────────────────────────────────────────────
+@app.get("/admin/users")
+async def listUsers(
+    search_username: str | None = Query(None),
+    current_user: str = Depends(admin_access_required),
+):
+    """Return all users, or filter by partial username match."""
+    users = getAllUsers()
+    if search_username:
+        q = search_username.lower()
+        users = [u for u in users if q in u["username"].lower()]
+    return {"users": users}
+
+
+# ──────────────────────────────────────────────
+#  Admin – delete a single user
+# ──────────────────────────────────────────────
+@app.delete("/admin/users/{username}")
+async def removeUser(username: str, current_user: str = Depends(admin_access_required)):
+    target = getUserByUsername(username)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"User '{username}' not found")
+
+    # Prevent deleting the last admin
+    if target["mode"] == "admin" and countAdmins() <= 1:
+        raise HTTPException(status_code=400, detail="Cannot delete the last admin user")
+
+    # Prevent self-deletion
+    if target["username"].lower() == current_user.lower():
+        raise HTTPException(status_code=400, detail="Cannot delete yourself")
+
+    deleteUser(username)
+    return {"detail": f"User '{username}' deleted"}
+
+
+# ──────────────────────────────────────────────
+#  Admin – batch update / delete users
+# ──────────────────────────────────────────────
+@app.patch("/admin/users/batch")
+async def batchUpdateUsers(
+    data: BatchUpdateRequest,
+    current_user: str = Depends(admin_access_required),
+):
+    results = {"updated": [], "deleted": [], "errors": []}
+
+    # --- updates ---
+    for item in data.updates:
+        target = getUserByUsername(item.username)
+        if target is None:
+            results["errors"].append(f"User '{item.username}' not found")
+            continue
+
+        fields = {}
+        if item.display_name is not None:
+            fields["display_name"] = item.display_name
+        if item.mode is not None:
+            # Prevent removing the last admin
+            if target["mode"] == "admin" and item.mode != "admin" and countAdmins() <= 1:
+                results["errors"].append(f"Cannot demote '{item.username}' – last admin")
+                continue
+            fields["mode"] = item.mode
+        if item.department is not None:
+            fields["department"] = item.department
+        if item.role is not None:
+            fields["role"] = item.role
+        if item.password is not None:
+            fields["hash"] = hash_password(item.password)
+
+        if fields:
+            updateUser(item.username, **fields)
+            results["updated"].append(item.username)
+
+    # --- deletes ---
+    for uname in data.deletes:
+        target = getUserByUsername(uname)
+        if target is None:
+            results["errors"].append(f"User '{uname}' not found (delete)")
+            continue
+        if target["mode"] == "admin" and countAdmins() <= 1:
+            results["errors"].append(f"Cannot delete last admin '{uname}'")
+            continue
+        if uname.lower() == current_user.lower():
+            results["errors"].append("Cannot delete yourself")
+            continue
+        deleteUser(uname)
+        results["deleted"].append(uname)
+
+    return results
+
+
+# ──────────────────────────────────────────────
+#  Chat – send message (with optional file)
+# ──────────────────────────────────────────────
+@app.post("/chat")
+async def chat(
+    message: str = Form(...),
+    domain: str = Form("crm"),
+    role_context: str = Form("Analyst"),
+    file: UploadFile | None = File(None),
+    current_user: str = Depends(getUserFromToken),
+):
+    """Process a chat message and optionally attach a file for context."""
+    file_context = ""
+    if file:
+        content = await file.read()
+        try:
+            file_context = f"\n\n[Attached file: {file.filename}]\n{content.decode('utf-8', errors='replace')[:5000]}"
+        except Exception:
+            file_context = f"\n\n[Attached file: {file.filename} (binary, preview unavailable)]"
+
+    prompt_text = message + file_context
+
+    inputs = {
+        "messages": [("user", prompt_text)],
+        "role": role_context,
+        "is_simulation": False,
+        "current_silo": domain,
+    }
+    result = await query_langgraph(**inputs)
+    return result
+
+
+# ──────────────────────────────────────────────
+#  Context – file upload for RAG / enrichment
+# ──────────────────────────────────────────────
+@app.post("/context/upload")
+async def uploadContext(
+    file: UploadFile = File(...),
+    current_user: str = Depends(getUserFromToken),
+):
+    """Accept a file upload to enrich the AI context.
+    For now, we acknowledge receipt; downstream RAG integration is TBD."""
+    content = await file.read()
+    size = len(content)
+    return {
+        "detail": f"File '{file.filename}' received ({size} bytes)",
+        "filename": file.filename,
+        "size": size,
+    }
+
+
+# ──────────────────────────────────────────────
+#  Integrations – Slack webhook
+# ──────────────────────────────────────────────
+@app.post("/integrations/slack/connect")
+async def connectSlack(
+    data: SlackConnectRequest,
+    current_user: str = Depends(admin_access_required),
+):
+    """Register a Slack webhook URL (stub — actual webhook posting is TBD)."""
+    return {"detail": "Slack webhook registered", "webhook_url": data.webhook_url}

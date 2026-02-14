@@ -535,18 +535,25 @@ def send_chat_message(
     attachment_bytes: bytes | None = None,
 ) -> str:
     """
-    Send a prompt to backend POST /prompt (or POST /chat with attachment).
-    If an attachment is present, the future backend call will use multipart/form-data.
-    For now, falls back to JSON-only POST /prompt.
+    Send a prompt to backend.
+    - With attachment → POST /chat (multipart/form-data)
+    - Without attachment → POST /prompt (JSON)
     """
     try:
+        BACKEND_BASE = PROMPT_ENDPOINT.rsplit("/prompt", 1)[0]
+
         if attachment_bytes and attachment_name:
-            # Future: POST /chat as multipart/form-data
-            # For now, mention the file in the prompt and use JSON endpoint
-            augmented = f"[Attached file: {attachment_name}] {message}"
+            # Use POST /chat with multipart form data
+            files = {"file": (attachment_name, attachment_bytes)}
+            form_data = {
+                "message": message,
+                "domain": domain.lower(),
+                "role_context": role,
+            }
             resp = requests.post(
-                PROMPT_ENDPOINT,
-                json={"domain": domain.lower(), "role_context": role, "prompt": augmented},
+                f"{BACKEND_BASE}/chat",
+                data=form_data,
+                files=files,
                 headers=_get_auth_headers(),
                 timeout=60,
             )

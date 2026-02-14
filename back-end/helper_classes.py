@@ -1,5 +1,6 @@
 from pydantic import BaseModel
-from typing import Literal, TypeAlias, Union
+from typing import Literal, Optional, TypeAlias, Union
+
 
 class RegistrationRequest(BaseModel):
     username: str
@@ -9,18 +10,40 @@ class RegistrationRequest(BaseModel):
     department: str
     role: str
 
+
 class LoginRequest(BaseModel):
     username: str
     password: str
+
 
 class InsightRequest(BaseModel):
     domain: str
     role_context: str
 
+
 class PromptRequest(BaseModel):
     domain: str
     role_context: str
     prompt: str
+
+
+class UserUpdate(BaseModel):
+    """Single user update inside a batch request."""
+    username: str
+    display_name: Optional[str] = None
+    mode: Optional[str] = None
+    department: Optional[str] = None
+    role: Optional[str] = None
+    password: Optional[str] = None          # plain-text; will be hashed server-side
+
+
+class BatchUpdateRequest(BaseModel):
+    updates: list[UserUpdate] = []
+    deletes: list[str] = []                 # usernames to delete
+
+
+class SlackConnectRequest(BaseModel):
+    webhook_url: str
 
 class SalesSimulation(BaseModel):
     domain: Literal["sales"]
