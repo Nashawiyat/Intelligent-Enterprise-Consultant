@@ -450,12 +450,21 @@ st_autorefresh(interval=INSIGHT_REFRESH_INTERVAL * 1000, limit=None, key="insigh
 # ──────────────────────────────────────────────
 # Helpers (backend integration)
 # ──────────────────────────────────────────────
+def _get_auth_headers() -> dict:
+    """Return headers with session-token for authenticated backend calls."""
+    token = st.session_state.get("auth_token")
+    if token:
+        return {"session-token": token}
+    return {}
+
+
 def fetch_insights(domain: str, role: str) -> list[dict]:
     """Fetch insights from backend POST /insights."""
     try:
         resp = requests.post(
             INSIGHTS_ENDPOINT,
             json={"domain": domain.lower(), "role_context": role},
+            headers=_get_auth_headers(),
             timeout=30,
         )
         if resp.status_code != 200:
@@ -538,12 +547,14 @@ def send_chat_message(
             resp = requests.post(
                 PROMPT_ENDPOINT,
                 json={"domain": domain.lower(), "role_context": role, "prompt": augmented},
+                headers=_get_auth_headers(),
                 timeout=60,
             )
         else:
             resp = requests.post(
                 PROMPT_ENDPOINT,
                 json={"domain": domain.lower(), "role_context": role, "prompt": message},
+                headers=_get_auth_headers(),
                 timeout=60,
             )
         resp.raise_for_status()

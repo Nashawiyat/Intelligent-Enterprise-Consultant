@@ -1,8 +1,10 @@
 # ICA – API Contract for Backend Team
 
 > **Frontend Branch:** `frontend+UI`
-> **Date:** 2026-02-13
-> **Status:** Draft — frontend mocks all endpoints via `st.session_state` until backend implements them.
+> **Date:** 2026-02-14
+> **Status:** Partially connected — Login, Create User, Insights, Prompt, and Simulation are wired to the real backend. Remaining admin CRUD, context upload, Slack, and chat-with-file are still mocked.
+
+> **Auth Header Convention:** The backend reads the JWT token from a **custom header** named `session-token` (FastAPI `Header()` parameter `session_token`). All protected endpoints require this header. The API_CONTRACT uses `Authorization: Bearer <token>` as the *logical* description; the actual HTTP header sent is `session-token: <jwt>`.
 
 ---
 
@@ -30,12 +32,14 @@
   "user": {
     "username": "string",
     "display_name": "string",
-    "role": "admin | user",
+    "mode": "admin | user",
     "department": "string",
-    "title": "CEO | CFO | COO | CTO | CMO | CHRO | VP Sales | VP Engineering | Analyst | Admin"
+    "role": "CEO | CFO | COO | CTO | CMO | CHRO | VP Sales | VP Engineering | Analyst | Admin"
   }
 }
 ```
+
+> **Field-name note:** The backend DB uses `mode` (permission level) and `role` (job title). The `getUserDetails()` function currently maps these to `role` and `title` in its response — a known inconsistency. The frontend normalizes both variants via `_normalize_backend_user()`.
 
 **Error Response (401):**
 ```json
@@ -67,9 +71,9 @@
     {
       "username": "string",
       "display_name": "string",
-      "role": "admin | user",
+      "mode": "admin | user",
       "department": "string",
-      "title": "string"
+      "role": "string"
     }
   ]
 }
@@ -91,9 +95,9 @@
   "username": "string",
   "password": "string",
   "display_name": "string",
-  "role": "admin | user",
+  "mode": "admin | user",
   "department": "string",
-  "title": "string"
+  "role": "string"
 }
 ```
 
@@ -104,9 +108,9 @@
   "user": {
     "username": "string",
     "display_name": "string",
-    "role": "admin | user",
+    "mode": "admin | user",
     "department": "string",
-    "title": "string"
+    "role": "string"
   }
 }
 ```
@@ -147,9 +151,9 @@
     {
       "username": "string (required — identifies the user)",
       "display_name": "string (optional)",
-      "role": "admin | user (optional)",
+      "mode": "admin | user (optional)",
       "department": "string (optional)",
-      "title": "string (optional)",
+      "role": "string (optional)",
       "password": "string (optional — only if changed)"
     }
   ],

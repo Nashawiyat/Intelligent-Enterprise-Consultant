@@ -304,8 +304,12 @@ def run_simulation_backend():
     st.session_state.sim_loading = True
     st.session_state.sim_error = None
 
+    # Auth header for protected endpoint
+    token = st.session_state.get("auth_token")
+    headers = {"session-token": token} if token else {}
+
     try:
-        resp = requests.post(SIMULATION_ENDPOINT, json=payload, timeout=60)
+        resp = requests.post(SIMULATION_ENDPOINT, json=payload, headers=headers, timeout=60)
         resp.raise_for_status()
         data = resp.json()
         st.session_state.sim_result = data

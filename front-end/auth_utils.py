@@ -8,12 +8,55 @@ See API_CONTRACT.md for the expected JSON payloads.
 """
 
 import streamlit as st
+import requests
 import uuid
 from datetime import datetime
 
 
 # ──────────────────────────────────────────────
-# Hardcoded demo credentials (mock DB)
+# Backend config
+# ──────────────────────────────────────────────
+try:
+    BACKEND_BASE_URL = st.secrets["BACKEND_URL"]
+except Exception:
+    BACKEND_BASE_URL = "http://localhost:8000"
+
+
+def _get_auth_headers() -> dict:
+    """Return headers dict with session-token for authenticated backend calls."""
+    token = st.session_state.get("auth_token")
+    if token:
+        return {"session-token": token}
+    return {}
+
+
+def _normalize_backend_user(user_dict: dict) -> dict:
+    """
+    Normalize a user dict from the backend to the frontend's internal naming.
+
+    Backend DB uses 'mode' (admin/user) and 'role' (job title).
+    Backend getUserDetails() currently returns 'role' (=mode) and 'title' (=role).
+    The frontend internally uses 'role' (admin/user) and 'title' (job title).
+
+    This function handles BOTH possible backend response shapes:
+      - {mode, role}  → frontend {role: mode, title: role}
+      - {role, title}  → frontend {role, title} (already correct)
+    """
+    out = dict(user_dict)
+    # If backend sends 'mode' field, map it to frontend 'role'
+    if "mode" in out:
+        out["role"] = out.pop("mode")
+    # If backend sends 'role' for job title (when 'title' is absent),
+    # and we already have 'role' set from 'mode', then 'role' in the
+    # original dict is the job title → put it in 'title'.
+    # But if 'title' already exists, leave it.
+    if "title" not in out and "role" in user_dict and "mode" in user_dict:
+        out["title"] = user_dict["role"]
+    return out
+
+
+# ──────────────────────────────────────────────
+# Hardcoded demo credentials (mock DB fallback)
 # ──────────────────────────────────────────────
 DEFAULT_USERS = [
     {
@@ -91,11 +134,50 @@ def get_current_user() -> dict | None:
 # ──────────────────────────────────────────────
 def mock_login(username: str, password: str) -> bool:
     """
-    Mock login: checks credentials against session_state.users_db.
-    In production, this will call POST /auth/login.
+    Login: tries the real backend POST /auth/login first.
+    Falls back to mock session_state.users_db if the backend is unreachable.
     Returns True on success.
     """
     init_auth_state()
+
+    # ── Try real backend first ──
+    try:
+        resp = requests.post(
+            f"{BACKEND_BASE_URL}/auth/login",
+            json={"username": username, "password": password},
+            timeout=10,
+        )
+        data = resp.json()
+
+        # Backend returns {token, user} on success, {detail} on failure
+        if "token" in data and "user" in data:
+            user = _normalize_backend_user(data["user"])
+            st.session_state.authenticated = True
+            st.session_state.auth_token = data["token"]
+            st.session_state.current_user = {
+                "username": user.get("username", username),
+                "display_name": user.get("display_name", username),
+                "role": user.get("role", "user"),
+                "department": user.get("department", ""),
+                "title": user.get("title", ""),
+            }
+            st.session_state.login_error = None
+            # Sync into local users_db so admin page can list this user
+            _sync_user_to_local_db(st.session_state.current_user)
+            return True
+        else:
+            # Backend returned an error (e.g. {"detail": "Invalid credentials"})
+            st.session_state.login_error = data.get("detail", "Invalid username or password.")
+            return False
+
+    except requests.exceptions.ConnectionError:
+        # Backend unreachable — fall back to mock
+        pass
+    except Exception:
+        # Any other error — fall back to mock
+        pass
+
+    # ── Fallback: mock login against session_state.users_db ──
     for user in st.session_state.users_db:
         if user["username"] == username and user["password"] == password:
             st.session_state.authenticated = True
@@ -111,6 +193,17 @@ def mock_login(username: str, password: str) -> bool:
             return True
     st.session_state.login_error = "Invalid username or password."
     return False
+
+
+def _sync_user_to_local_db(user: dict):
+    """Add/update user in local session DB so admin page reflects backend users."""
+    init_auth_state()
+    for u in st.session_state.users_db:
+        if u["username"] == user["username"]:
+            u.update({k: v for k, v in user.items() if k != "password"})
+            return
+    # Not found locally — add without password
+    st.session_state.users_db.append({**user, "password": ""})
 
 
 def logout():
@@ -142,11 +235,57 @@ def create_user(
     title: str,
 ) -> tuple[bool, str]:
     """
-    Create a new user in the mock DB.
-    Returns (success: bool, message: str).
+    Create a new user. Tries real backend POST /admin/users first,
+    falls back to mock session_state DB if backend is unreachable.
+
+    Frontend params: role = admin/user, title = job title.
+    Backend expects:  mode = admin/user, role  = job title.
     """
     init_auth_state()
-    # Check duplicates
+
+    # ── Try real backend first ──
+    try:
+        payload = {
+            "username": username,
+            "password": password,
+            "display_name": display_name,
+            "mode": role,          # frontend 'role' → backend 'mode'
+            "department": department,
+            "role": title,          # frontend 'title' → backend 'role'
+        }
+        resp = requests.post(
+            f"{BACKEND_BASE_URL}/admin/users",
+            json=payload,
+            headers=_get_auth_headers(),
+            timeout=10,
+        )
+        data = resp.json()
+
+        if resp.status_code in (200, 201):
+            # Also add to local DB so the admin page reflects it immediately
+            new_user = {
+                "username": username,
+                "password": password,
+                "display_name": display_name,
+                "role": role,
+                "department": department,
+                "title": title,
+            }
+            # Avoid duplicates
+            if not any(u["username"] == username for u in st.session_state.users_db):
+                st.session_state.users_db.append(new_user)
+            msg = data.get("detail", data.get("message", f"User '{username}' created successfully."))
+            return True, msg
+        else:
+            detail = data.get("detail", f"Backend error ({resp.status_code})")
+            return False, detail
+
+    except requests.exceptions.ConnectionError:
+        pass  # Fall back to mock
+    except Exception:
+        pass  # Fall back to mock
+
+    # ── Fallback: mock create in session_state ──
     for u in st.session_state.users_db:
         if u["username"] == username:
             return False, f"Username '{username}' already exists."
