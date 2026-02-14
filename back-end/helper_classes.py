@@ -1,6 +1,9 @@
 from pydantic import BaseModel
 from typing import Literal, TypeAlias, Union
 
+class GetUserRequest(BaseModel):
+    search_username: str | None
+
 class RegistrationRequest(BaseModel):
     username: str
     password: str

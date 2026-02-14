@@ -58,6 +58,9 @@ def getUserDetails(username):
         raise Exception("Cursor not initialised")
     
     result = cursor.execute("SELECT display_name, mode, department, role FROM Users WHERE username = ?", (username,)).fetchone()
+    
+    if result is None:
+        return Exception("User not found")
 
     return {
         "username": username,
@@ -66,6 +69,25 @@ def getUserDetails(username):
         "department": result[2],
         "title": result[3]
     }
+
+def getAllUsersDetails():
+    if not cursor:
+        raise Exception("Cursor not initialised")
+
+    result = cursor.execute("SELECT username, display_name, mode, department, role FROM Users ORDER BY department, username")
+    result = result.fetchall()
+
+    listed = []
+    for (username, display_name, mode, department, role) in result:
+        listed.append({
+            "username": username,
+            "display_name": display_name,
+            "mode": mode,
+            "department": department,
+            "role": role
+        })
+    
+    return listed
 
 def isModeAdmin(username):
     if not cursor:

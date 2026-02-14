@@ -2,9 +2,10 @@ from fastapi import FastAPI, HTTPException, Request, Depends
 from contextlib import asynccontextmanager
 import os
 import asyncio
+from typing import Optional
 
-from db_helper_functions import init_db, close_db, recordInsight, getLatestInsightRecordFromDB, createUser, getUserHash, getUserDetails
-from helper_classes import LoginRequest, PromptRequest, InsightRequest, BaseSimulationRequest, RegistrationRequest
+from db_helper_functions import init_db, close_db, recordInsight, getLatestInsightRecordFromDB, createUser, getUserHash, getUserDetails, getAllUsersDetails
+from helper_classes import LoginRequest, PromptRequest, InsightRequest, BaseSimulationRequest, RegistrationRequest, GetUserRequest
 from hashing import hash_password, verify_hash
 from token_cryptography import generateToken
 from access_validation import admin_access_required, getUserFromToken
@@ -209,3 +210,20 @@ async def addNewUser(data: RegistrationRequest, current_user: str = Depends(admi
         "detail": f"User {data.username} created",
         "user": getUserDetails(data.username)
     }
+
+@app.get("/admin/user")
+async def getUser(search_username: Optional[str] = None, current_user: str = Depends(admin_access_required)):
+    print("LOG: search_username", search_username)
+    if search_username is None:
+        return {
+            "users": getAllUsersDetails()
+        }
+    else:
+        try:
+            return {
+                "users": [
+                    getUserDetails(search_username)
+                ]
+            }
+        except:
+            return {"detail": "User not found"}
