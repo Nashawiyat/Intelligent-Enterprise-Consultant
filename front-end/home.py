@@ -100,7 +100,7 @@ div[data-testid="stAppViewContainer"] > section > div {{
 /* === PANEL BORDERS === */
 [data-testid="stVerticalBlock"].st-key-insights_panel,
 [data-testid="stVerticalBlock"].st-key-chat_panel,
-[data-testid="stVerticalBlock"].st-key-context_panel {{
+[data-testid="stVerticalBlock"].st-key-slack_panel {{
     border: 3px solid {BORDER_STRONG} !important;
     border-radius: 16px !important;
     background: {CARD} !important;
@@ -405,8 +405,13 @@ if "last_insight_fetch" not in st.session_state:
     st.session_state.last_insight_fetch = 0.0
 if "insight_error" not in st.session_state:
     st.session_state.insight_error = None
+if "insight_consecutive_errors" not in st.session_state:
+    st.session_state.insight_consecutive_errors = 0
+if "chat_file_key" not in st.session_state:
+    st.session_state.chat_file_key = 0
 
 INSIGHT_REFRESH_INTERVAL = 10  # seconds
+MAX_BACKOFF_MULTIPLIER = 30   # max 5 min between retries on repeated errors
 
 # Auto-refresh the page to poll for new insights
 st_autorefresh(interval=INSIGHT_REFRESH_INTERVAL * 1000, limit=None, key="insight_autorefresh")
@@ -423,19 +428,43 @@ def fetch_insights(domain: str, role: str) -> list[dict]:
             json={"domain": domain.lower(), "role_context": role},
             timeout=30,
         )
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            # Try to extract the backend's error detail
+            try:
+                err_data = resp.json()
+                detail = err_data.get("detail", resp.text)
+            except Exception:
+                detail = resp.text or f"HTTP {resp.status_code}"
+            # Detect rate-limit hints from Groq (backend wraps 429 as 500)
+            if "rate_limit" in str(detail).lower() or "429" in str(detail):
+                st.session_state.insight_error = (
+                    "⏳ Backend AI rate limit reached. Auto-retry will slow down. "
+                    "Please wait a few minutes."
+                )
+            else:
+                st.session_state.insight_error = f"Backend error ({resp.status_code}): {detail}"
+            st.session_state.insight_consecutive_errors += 1
+            return []
+
         data = resp.json()
+        # Successful fetch — reset error backoff
+        st.session_state.insight_consecutive_errors = 0
         # Backend may return a single insight dict or a list
         if isinstance(data, dict):
+            # If backend returns a "no_insight" status, don't treat as real insight
+            if data.get("status") == "no_insight":
+                return []
             return [data]
         elif isinstance(data, list):
             return data
         return []
     except requests.exceptions.ConnectionError:
         st.session_state.insight_error = "Backend not reachable. Start the backend server."
+        st.session_state.insight_consecutive_errors += 1
         return []
     except Exception as e:
         st.session_state.insight_error = f"Error fetching insights: {e}"
+        st.session_state.insight_consecutive_errors += 1
         return []
 
 
@@ -459,22 +488,40 @@ def accumulate_insights(new_insights: list[dict]):
             st.session_state.seen_insight_ids.add(iid)
 
 
-def send_chat_message(message: str, domain: str, role: str) -> str:
-    """Send a prompt to backend POST /prompt and return the response text."""
+def send_chat_message(
+    message: str,
+    domain: str,
+    role: str,
+    attachment_name: str | None = None,
+    attachment_bytes: bytes | None = None,
+) -> str:
+    """
+    Send a prompt to backend POST /prompt (or POST /chat with attachment).
+    If an attachment is present, the future backend call will use multipart/form-data.
+    For now, falls back to JSON-only POST /prompt.
+    """
     try:
-        resp = requests.post(
-            PROMPT_ENDPOINT,
-            json={"domain": domain.lower(), "role_context": role, "prompt": message},
-            timeout=60,
-        )
+        if attachment_bytes and attachment_name:
+            # Future: POST /chat as multipart/form-data
+            # For now, mention the file in the prompt and use JSON endpoint
+            augmented = f"[Attached file: {attachment_name}] {message}"
+            resp = requests.post(
+                PROMPT_ENDPOINT,
+                json={"domain": domain.lower(), "role_context": role, "prompt": augmented},
+                timeout=60,
+            )
+        else:
+            resp = requests.post(
+                PROMPT_ENDPOINT,
+                json={"domain": domain.lower(), "role_context": role, "prompt": message},
+                timeout=60,
+            )
         resp.raise_for_status()
         data = resp.json()
         # Backend returns insight JSON; extract chat_response or summary
         if isinstance(data, dict):
-            # Chat mode returns {"chat_response": "..."}
             if "chat_response" in data:
                 return data["chat_response"]
-            # Report mode returns full insight JSON — extract summary
             content = data.get("content", {})
             if isinstance(content, dict) and content.get("summary"):
                 return content["summary"]
@@ -567,7 +614,10 @@ with top_toggle:
 # Auto-refresh insights — ACCUMULATE, don't overwrite
 # ──────────────────────────────────────────────
 now = time.time()
-if now - st.session_state.last_insight_fetch >= INSIGHT_REFRESH_INTERVAL:
+# Exponential backoff: on repeated errors, wait longer between retries
+_err_count = st.session_state.insight_consecutive_errors
+_backoff = min(_err_count, MAX_BACKOFF_MULTIPLIER) * INSIGHT_REFRESH_INTERVAL if _err_count else INSIGHT_REFRESH_INTERVAL
+if now - st.session_state.last_insight_fetch >= _backoff:
     st.session_state.insight_error = None
     fresh = fetch_insights(st.session_state.selected_domain, st.session_state.selected_role)
     if fresh:
@@ -662,50 +712,12 @@ with main_col:
                                         for step in chain:
                                             st.markdown(f"**{step['step']}.** *{step['agent']}* – {step['thought']}")
 
-    # ── Context Upload & Integrations panel (below insights) ──
-    with st.container(border=True, key="context_panel"):
-        ctx_col1, ctx_col2, ctx_col3 = st.columns([2, 2, 1.5], gap="medium")
-
-        # — File Upload —
-        with ctx_col1:
-            st.markdown(f'<div class="panel-header">📎 Upload Context</div>', unsafe_allow_html=True)
-
-            uploaded_file = st.file_uploader(
-                "Upload PDF or CSV",
-                type=["pdf", "csv"],
-                key="context_file_uploader",
-                label_visibility="collapsed",
-            )
-            file_desc = st.text_input(
-                "Description (optional)",
-                placeholder="e.g. Q4 Sales Report",
-                key="context_file_desc",
-                label_visibility="collapsed",
-            )
-
-            if uploaded_file:
-                if st.button("📤 Upload & Index", key="upload_ctx_btn", type="primary"):
-                    file_bytes = uploaded_file.read()
-                    result = mock_upload_context(
-                        file_name=uploaded_file.name,
-                        file_bytes=file_bytes,
-                        domain=st.session_state.selected_domain,
-                        description=file_desc,
-                    )
-                    st.toast(f"Uploaded: {result['filename']} ({result['size_kb']} KB)", icon="✅")
-                    st.rerun()
-
-            # Show uploaded files
-            if st.session_state.uploaded_files:
-                st.markdown(f'<div style="font-size:0.75rem;color:{TEXT2};margin-top:0.3rem;">Recently uploaded:</div>', unsafe_allow_html=True)
-                for f in st.session_state.uploaded_files[-3:]:
-                    st.markdown(
-                        f'<span class="context-badge">📄 {f["filename"]} · {f["domain"]} · {f["size_kb"]}KB</span>',
-                        unsafe_allow_html=True,
-                    )
+    # ── Slack Integration & Session Stats (below insights) ──
+    with st.container(border=True, key="slack_panel"):
+        slack_col, stats_col = st.columns([3, 1.5], gap="medium")
 
         # — Slack Integration —
-        with ctx_col2:
+        with slack_col:
             st.markdown(f'<div class="panel-header">💬 Slack Integration</div>', unsafe_allow_html=True)
 
             if st.session_state.slack_connected:
@@ -717,10 +729,14 @@ with main_col:
                     st.rerun()
             else:
                 with st.form("slack_form"):
-                    webhook = st.text_input("Webhook URL", placeholder="https://hooks.slack.com/services/...", key="slack_webhook")
-                    channel = st.text_input("Channel", value="#insights", key="slack_channel")
-                    notify = st.selectbox("Notify on", ["high_urgency", "all"], key="slack_notify")
-                    slack_submit = st.form_submit_button("Connect Slack", type="primary", use_container_width=True)
+                    s_c1, s_c2, s_c3 = st.columns(3)
+                    with s_c1:
+                        webhook = st.text_input("Webhook URL", placeholder="https://hooks.slack.com/services/...", key="slack_webhook")
+                    with s_c2:
+                        channel = st.text_input("Channel", value="#insights", key="slack_channel")
+                    with s_c3:
+                        notify = st.selectbox("Notify on", ["high_urgency", "all"], key="slack_notify")
+                    slack_submit = st.form_submit_button("Connect Slack", type="primary")
 
                     if slack_submit:
                         if webhook.strip():
@@ -731,7 +747,7 @@ with main_col:
                             st.error("Webhook URL required.")
 
         # — Quick Stats —
-        with ctx_col3:
+        with stats_col:
             st.markdown(f'<div class="panel-header">📈 Session Stats</div>', unsafe_allow_html=True)
             st.markdown(f"""
             <div style="font-size:0.8rem;line-height:2;color:{TEXT2};">
@@ -743,27 +759,34 @@ with main_col:
             """, unsafe_allow_html=True)
 
 
-# ── RIGHT: Chatbot panel ──
+# ── RIGHT: Chatbot panel with integrated file attachment ──
 with chat_col:
     chat_panel = st.container(border=True, key="chat_panel")
     with chat_panel:
         st.markdown(f'<div class="panel-header">💬 Chatbot</div>', unsafe_allow_html=True)
 
-        chat_box = st.container(height=420)
+        chat_box = st.container(height=380)
         with chat_box:
             if not st.session_state.chat_history:
                 st.markdown("""
                 <div class="chat-bubble assistant">
                     Hi! I'm your AI assistant. Ask me anything about your business data.
+                    You can also attach a PDF or CSV for context.
                 </div>
                 """, unsafe_allow_html=True)
 
             for msg in st.session_state.chat_history:
                 cls = "user" if msg["role"] == "user" else "assistant"
                 ico = "👤" if msg["role"] == "user" else "🤖"
+                attachment_badge = ""
+                if msg.get("attachment"):
+                    attachment_badge = (
+                        f'<span class="context-badge" style="margin-left:0.3rem;">'
+                        f'📎 {msg["attachment"]}</span>'
+                    )
                 st.markdown(f"""
                 <div class="chat-bubble {cls}">
-                    {ico} {msg["content"]}
+                    {ico} {msg["content"]}{attachment_badge}
                     <div class="chat-time">{msg.get("time", "")}</div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -793,14 +816,60 @@ with chat_col:
             </script>
             """, height=0, scrolling=False)
 
+        # ── Integrated file uploader (above chat input) ──
+        chat_attachment = st.file_uploader(
+            "Attach context (PDF/CSV)",
+            type=["pdf", "csv"],
+            key=f"chat_attachment_{st.session_state.chat_file_key}",
+            label_visibility="collapsed",
+        )
+        if chat_attachment:
+            st.markdown(
+                f'<span class="context-badge">📎 {chat_attachment.name} '
+                f'({round(chat_attachment.size / 1024, 1)} KB)</span>',
+                unsafe_allow_html=True,
+            )
+
         user_input = st.chat_input("Ask anything...", key="chat_input")
         if user_input:
             now_str = datetime.now().strftime("%I:%M %p")
-            st.session_state.chat_history.append({"role": "user", "content": user_input, "time": now_str})
+
+            # Capture attachment before clearing
+            attachment_name = None
+            attachment_bytes = None
+            if chat_attachment:
+                attachment_name = chat_attachment.name
+                attachment_bytes = chat_attachment.read()
+                # Also record in uploaded_files for session stats
+                mock_upload_context(
+                    file_name=attachment_name,
+                    file_bytes=attachment_bytes,
+                    domain=st.session_state.selected_domain,
+                    description=f"Chat attachment: {user_input[:60]}",
+                )
+
+            # Add user message to history
+            st.session_state.chat_history.append({
+                "role": "user",
+                "content": user_input,
+                "time": now_str,
+                "attachment": attachment_name,
+            })
+
+            # Send to backend (with attachment info if present)
             response = send_chat_message(
                 user_input,
                 st.session_state.selected_domain,
                 st.session_state.selected_role,
+                attachment_name=attachment_name,
+                attachment_bytes=attachment_bytes,
             )
-            st.session_state.chat_history.append({"role": "assistant", "content": response, "time": now_str})
+            st.session_state.chat_history.append({
+                "role": "assistant",
+                "content": response,
+                "time": now_str,
+            })
+
+            # Clear the file uploader by incrementing its key
+            st.session_state.chat_file_key += 1
             st.rerun()

@@ -124,6 +124,57 @@
 }
 ```
 
+### `PATCH /admin/users/batch`
+
+| Field | Value |
+|---|---|
+| **Description** | Batch update and/or delete multiple users in a single request. Requires admin token. |
+| **Auth Header** | `Authorization: Bearer <token>` |
+| **Content-Type** | `application/json` |
+
+**Request Payload:**
+```json
+{
+  "updates": [
+    {
+      "username": "string (required — identifies the user)",
+      "display_name": "string (optional)",
+      "role": "admin | user (optional)",
+      "department": "string (optional)",
+      "title": "string (optional)",
+      "password": "string (optional — only if changed)"
+    }
+  ],
+  "deletes": [
+    "username1",
+    "username2"
+  ]
+}
+```
+
+> Only fields present in each update object are modified. The `password` field should only be included when the admin explicitly changed it (the frontend sends the sentinel value `"******"` for unchanged passwords — the backend must ignore that value).
+
+**Success Response (200):**
+```json
+{
+  "updated_count": 3,
+  "deleted_count": 1,
+  "errors": []
+}
+```
+
+**Partial Failure Response (200):**
+```json
+{
+  "updated_count": 2,
+  "deleted_count": 0,
+  "errors": [
+    "User 'jdoe' not found",
+    "Cannot delete the last admin"
+  ]
+}
+```
+
 ---
 
 ## 3. Context Upload
@@ -251,9 +302,9 @@
 
 ---
 
-## 6. Chat / Prompt  *(existing — no changes)*
+## 6. Chat / Prompt  *(updated — file attachment support)*
 
-### `POST /prompt`
+### `POST /prompt`  *(JSON-only, no attachment)*
 
 **Request Payload:**
 ```json
@@ -270,6 +321,33 @@
   "chat_response": "string"
 }
 ```
+
+### `POST /chat`  *(with optional file attachment)*
+
+| Field | Value |
+|---|---|
+| **Description** | Send a chat prompt with an optional context-file attachment. When an attachment is provided, the backend should index/parse the file and use its contents as additional context for the response. |
+| **Content-Type** | `multipart/form-data` |
+| **Auth Header** | `Authorization: Bearer <token>` |
+
+**Form Fields:**
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `domain` | `string` | yes | Target domain (sales, operations, hr, accounting, crm) |
+| `role_context` | `string` | yes | User role / title for response tailoring |
+| `prompt` | `string` | yes | The user's chat message |
+| `file` | `file` | no | Optional PDF or CSV attachment for additional context |
+
+**Response (200):**
+```json
+{
+  "chat_response": "string",
+  "file_processed": true,
+  "file_id": "uuid-string-or-null"
+}
+```
+
+> **Migration note:** The frontend currently falls back to `POST /prompt` with the filename prefixed in the prompt text when an attachment is present. Once the backend implements `POST /chat`, the frontend will switch to the multipart endpoint.
 
 ---
 

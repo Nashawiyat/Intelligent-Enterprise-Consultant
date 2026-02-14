@@ -179,9 +179,9 @@ sim_page = st.Page("simulation.py", title="Simulation", icon="📊")
 
 nav_pages = [home_page, sim_page]
 
-# Add admin page if current user is admin
+# Add admin page if current user is admin (strict role check)
 if is_admin():
-    admin_page = st.Page("admin_pages.py", title="Admin", icon="⚙️")
+    admin_page = st.Page("admin_pages.py", title="User Management", icon="👥")
     nav_pages.append(admin_page)
 
 pg = st.navigation(nav_pages, position="hidden")
@@ -455,9 +455,9 @@ with st.sidebar:
     if st.button("📊   Simulation", key="nav_Simulation"):
         st.switch_page(sim_page)
 
-    # Admin nav (only for admins)
+    # User Management nav (only visible for role == "admin")
     if is_admin():
-        if st.button("⚙️   Admin", key="nav_Admin"):
+        if st.button("👥   User Management", key="nav_Admin"):
             st.switch_page(admin_page)
 
     # Account section – pushed to bottom via CSS

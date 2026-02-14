@@ -177,6 +177,71 @@ def delete_user(username: str) -> tuple[bool, str]:
     return False, f"User '{username}' not found."
 
 
+def get_all_users_with_passwords() -> list[dict]:
+    """Return full user list *including* passwords (admin-only, for data_editor)."""
+    init_auth_state()
+    return [dict(u) for u in st.session_state.users_db]
+
+
+PASSWORD_MASK = "******"
+
+
+def batch_update_users(
+    updates: list[dict],
+    deletes: list[str],
+) -> tuple[int, int, list[str]]:
+    """
+    Apply batch edits + deletes to st.session_state.users_db.
+    `updates` – list of dicts with at least "username" and any changed fields.
+                Password field: value == PASSWORD_MASK means *unchanged*.
+    `deletes` – list of usernames to remove.
+    Returns (updated_count, deleted_count, errors).
+    In production this calls PATCH /admin/users/batch.
+    """
+    init_auth_state()
+    errors: list[str] = []
+    updated = 0
+    deleted = 0
+
+    # --- Deletes ---
+    protected = {"admin"}
+    for uname in deletes:
+        if uname in protected:
+            errors.append(f"Cannot delete protected account '{uname}'.")
+            continue
+        before = len(st.session_state.users_db)
+        st.session_state.users_db = [
+            u for u in st.session_state.users_db if u["username"] != uname
+        ]
+        if len(st.session_state.users_db) < before:
+            deleted += 1
+        else:
+            errors.append(f"User '{uname}' not found for deletion.")
+
+    # --- Updates ---
+    user_map = {u["username"]: u for u in st.session_state.users_db}
+    for upd in updates:
+        uname = upd.get("username")
+        if not uname or uname not in user_map:
+            errors.append(f"User '{uname}' not found for update.")
+            continue
+        target = user_map[uname]
+        changed = False
+        for field in ("display_name", "role", "department", "title"):
+            if field in upd and upd[field] != target.get(field):
+                target[field] = upd[field]
+                changed = True
+        # Password: only update if not masked
+        pw = upd.get("password", PASSWORD_MASK)
+        if pw != PASSWORD_MASK and pw.strip():
+            target["password"] = pw
+            changed = True
+        if changed:
+            updated += 1
+
+    return updated, deleted, errors
+
+
 # ──────────────────────────────────────────────
 # Context upload (mocked)
 # ──────────────────────────────────────────────
