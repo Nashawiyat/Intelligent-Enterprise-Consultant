@@ -18,3 +18,9 @@ def generateToken(username):
 
     token = jwt.encode(payload, SECRET_KEY, ALGORITHM)
     return token
+
+def decodeToken(token):
+    try:
+        return jwt.decode(token, SECRET_KEY, ALGORITHM)
+    except Exception as e:
+        return None
