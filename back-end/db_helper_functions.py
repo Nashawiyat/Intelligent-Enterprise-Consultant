@@ -1,5 +1,3 @@
-# NOTE: NO LONGER BEING USED; KEPT FOR FUTURE IMPROVEMENT
-
 import sqlite3
 
 conn = None
@@ -7,7 +5,7 @@ cursor = None
 def init_db():
     global conn
     global cursor
-    conn = sqlite3.connect("./admin_db.db")
+    conn = sqlite3.connect("./admin_db.db", check_same_thread=False)
     cursor = conn.cursor()
 
 def close_db():
@@ -26,8 +24,8 @@ def getLatestInsightRecordFromDB(domain: str):
     result = cursor.execute("SELECT json FROM Insights WHERE domain = ? ORDER BY savedAt DESC LIMIT 1", (domain,))
     return result.fetchone()
 
-def createUser(username, hash, display_name, mode, department, role):
-    data = (username, hash, display_name, mode, department, role)
+def createUser(username, hashed, display_name, mode, department, role):
+    data = (username, hashed, display_name, mode, department, role)
     cursor.execute(
         "INSERT INTO Users " \
         "(username, hash, display_name, mode, department, role)" \
@@ -48,6 +46,16 @@ def getUserDetails(username):
         "title": result[3]
     }
 
-def loginUser(username, token):
-    cursor.execute("INSERT INTO SessionTokens VALUES (?, ?)", (username, token))
+def loginUser(username, token, mode):
+    data = (username, token, mode)
+    cursor.execute("INSERT INTO SessionTokens VALUES (?, ?, ?)", data)
     conn.commit()
+
+def isModeAdmin(username):
+    print("\n\nDB USERNAME: \n\n", username)
+    result = cursor.execute("SELECT mode FROM Users WHERE username = ?", (username,)).fetchone()
+    if result is None:
+        raise Exception(f"Mode not found for username. Does {username} exist?")
+
+    return result[0] == "admin"
+    
