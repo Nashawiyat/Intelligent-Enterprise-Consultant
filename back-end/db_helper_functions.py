@@ -1,4 +1,5 @@
 import sqlite3
+import json
 
 conn = None
 cursor = None
@@ -12,25 +13,42 @@ def close_db():
     conn.commit()
     conn.close()
 
-def recordInsight(json: str, domain: str):
+def recordInsight(json_result: str, domain: str):
     if not cursor:
         raise Exception("Cursor not initialised")
     
-    data = (json, domain)
+    json_string = json.dumps(json_result)
+    data = (json_string, domain)
     cursor.execute("INSERT INTO Insights (json, domain) VALUES (?, ?)", data)
     conn.commit()
 
 def getLatestInsightRecordFromDB(domain: str):
-    result = cursor.execute("SELECT json FROM Insights WHERE domain = ? ORDER BY savedAt DESC LIMIT 1", (domain,))
-    return result.fetchone()
+    if not cursor:
+        raise Exception("Cursor not initialised")
+    
+    result = cursor.execute("SELECT json, savedAt FROM Insights WHERE domain = ? ORDER BY savedAt DESC LIMIT 4", (domain,))
+    listed = []
+    for (json_result, savedAt) in result:
+        listed.append(
+            {
+                "timestamp": savedAt,
+                "insight": json.loads(json_result) 
+            }
+        )
+
+    return listed
 
 def createUser(username, hashed, display_name, mode, department, role):
+    if not cursor:
+        raise Exception("Cursor not initialised")
+    
     data = (username, hashed, display_name, mode, department, role)
     cursor.execute(
         "INSERT INTO Users (username, hash, display_name, mode, department, role) VALUES (?, ?, ?, ?, ?, ?)", data)
     conn.commit()
 
 def getUserHash(username):
+<<<<<<< HEAD
     # Case-insensitive lookup
     return cursor.execute(
         "SELECT hash FROM Users WHERE LOWER(username) = LOWER(?)", (username,)
@@ -43,6 +61,21 @@ def getUserDetails(username):
     ).fetchone()
     if result is None:
         return None
+=======
+    if not cursor:
+        raise Exception("Cursor not initialised")
+    
+    return cursor.execute("SELECT hash FROM Users WHERE username = ?", (username,)).fetchone()
+    
+def getUserDetails(username):
+    if not cursor:
+        raise Exception("Cursor not initialised")
+    
+    result = cursor.execute("SELECT display_name, mode, department, role FROM Users WHERE username = ?", (username,)).fetchone()
+    
+    if result is None:
+        return Exception("User not found")
+>>>>>>> main
 
     return {
         "username": username,
@@ -52,6 +85,7 @@ def getUserDetails(username):
         "role": result[3],
     }
 
+<<<<<<< HEAD
 
 def getUserByUsername(username):
     """Case-insensitive exact match. Returns user dict or None."""
@@ -128,6 +162,32 @@ def isModeAdmin(username):
     result = cursor.execute(
         "SELECT mode FROM Users WHERE LOWER(username) = LOWER(?)", (username,)
     ).fetchone()
+=======
+def getAllUsersDetails():
+    if not cursor:
+        raise Exception("Cursor not initialised")
+
+    result = cursor.execute("SELECT username, display_name, mode, department, role FROM Users ORDER BY department, username")
+    result = result.fetchall()
+
+    listed = []
+    for (username, display_name, mode, department, role) in result:
+        listed.append({
+            "username": username,
+            "display_name": display_name,
+            "mode": mode,
+            "department": department,
+            "role": role
+        })
+    
+    return listed
+
+def isModeAdmin(username):
+    if not cursor:
+        raise Exception("Cursor not initialised")
+    
+    result = cursor.execute("SELECT mode FROM Users WHERE username = ?", (username,)).fetchone()
+>>>>>>> main
     if result is None:
         raise Exception(f"Mode not found for username. Does {username} exist?")
 

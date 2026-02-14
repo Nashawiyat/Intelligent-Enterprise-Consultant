@@ -4,7 +4,9 @@ from contextlib import asynccontextmanager
 import os
 import json
 import asyncio
+from typing import Optional
 
+<<<<<<< HEAD
 from db_helper_functions import (
     init_db, close_db, recordInsight, getLatestInsightRecordFromDB,
     createUser, getUserHash, getUserDetails, getUserByUsername,
@@ -14,6 +16,10 @@ from helper_classes import (
     LoginRequest, PromptRequest, InsightRequest, BaseSimulationRequest,
     RegistrationRequest, BatchUpdateRequest, SlackConnectRequest,
 )
+=======
+from db_helper_functions import init_db, close_db, recordInsight, getLatestInsightRecordFromDB, createUser, getUserHash, getUserDetails, getAllUsersDetails
+from helper_classes import LoginRequest, PromptRequest, InsightRequest, BaseSimulationRequest, RegistrationRequest, GetUserRequest
+>>>>>>> main
 from hashing import hash_password, verify_hash
 from token_cryptography import generateToken
 from access_validation import admin_access_required, getUserFromToken
@@ -144,18 +150,31 @@ async def getSimulation(request: Request, set_fields: BaseSimulationRequest, cur
 
 # Function to get latest row from insights table in the database 
 async def getLatestInsights(domain, role_context):
-    if PERIODIC_UPDATES:
-        insight_result = getLatestInsightRecordFromDB(domain)
-    else:
-        proactive_inputs = {
-            "messages": [("user", "Perform a cross-domain health check. Look for anomalies.")],
-            "role": role_context, # Placeholder for now
-            "is_simulation": False,
-            "current_silo": domain # Initializing to avoid KeyErrors
-        }
+    proactive_inputs = {
+        "messages": [("user", "Perform a cross-domain health check. Look for anomalies.")],
+        "role": role_context, # Placeholder for now
+        "is_simulation": False,
+        "current_silo": domain # Initializing to avoid KeyErrors
+    }
+    
+    insight_result = await query_langgraph(**proactive_inputs)
+    recordInsight(insight_result, domain)
+
+    return getLatestInsightRecordFromDB(domain)
+
+    # if PERIODIC_UPDATES:
+    #     insight_result = getLatestInsightRecordFromDB(domain)
+    # else:
+    #     proactive_inputs = {
+    #         "messages": [("user", "Perform a cross-domain health check. Look for anomalies.")],
+    #         "role": role_context, # Placeholder for now
+    #         "is_simulation": False,
+    #         "current_silo": domain # Initializing to avoid KeyErrors
+    #     }
         
-        insight_result = await query_langgraph(**proactive_inputs)
-    return insight_result
+    #     insight_result = await query_langgraph(**proactive_inputs)
+
+    # return insight_result
 
 @app.post("/insights")
 async def getInsights(data: InsightRequest, current_user: str = Depends(getUserFromToken)):
@@ -211,6 +230,7 @@ async def addNewUser(data: RegistrationRequest, current_user: str = Depends(admi
         "user": getUserDetails(data.username)
     }
 
+<<<<<<< HEAD
 
 # ──────────────────────────────────────────────
 #  Admin – list / search users
@@ -365,3 +385,21 @@ async def connectSlack(
 ):
     """Register a Slack webhook URL (stub — actual webhook posting is TBD)."""
     return {"detail": "Slack webhook registered", "webhook_url": data.webhook_url}
+=======
+@app.get("/admin/user")
+async def getUser(search_username: Optional[str] = None, current_user: str = Depends(admin_access_required)):
+    print("LOG: search_username", search_username)
+    if search_username is None:
+        return {
+            "users": getAllUsersDetails()
+        }
+    else:
+        try:
+            return {
+                "users": [
+                    getUserDetails(search_username)
+                ]
+            }
+        except:
+            return {"detail": "User not found"}
+>>>>>>> main
