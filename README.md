@@ -5,7 +5,7 @@ DeriveHackathon 2026 - Unified AI agent delivering real-time insights, predictiv
 Library installation:
 
 ```bash
-pip install langgraph langchain langchain-core langchain-community langchain-groq tavily-python fastapi uvicorn pydantic streamlit plotly requests streamlit-autorefresh python-jose[cryptography] passlib
+pip install langgraph langchain langchain-core langchain-community langchain-groq tavily-python fastapi uvicorn pydantic streamlit plotly requests streamlit-autorefresh python-jose[cryptography] bcrypt
 ```
 
 running back-end:
