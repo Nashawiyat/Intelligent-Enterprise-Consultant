@@ -1,4 +1,5 @@
 import sqlite3
+import json
 
 conn = None
 cursor = None
@@ -12,11 +13,12 @@ def close_db():
     conn.commit()
     conn.close()
 
-def recordInsight(json: str, domain: str):
+def recordInsight(json_result: str, domain: str):
     if not cursor:
         raise Exception("Cursor not initialised")
     
-    data = (json, domain)
+    json_string = json.dumps(json_result)
+    data = (json_string, domain)
     cursor.execute("INSERT INTO Insights (json, domain) VALUES (?, ?)", data)
     conn.commit()
 
@@ -26,15 +28,15 @@ def getLatestInsightRecordFromDB(domain: str):
     
     result = cursor.execute("SELECT json, savedAt FROM Insights WHERE domain = ? ORDER BY savedAt DESC LIMIT 4", (domain,))
     listed = []
-    for (json, savedAt) in result:
+    for (json_result, savedAt) in result:
         listed.append(
             {
                 "timestamp": savedAt,
-                "insight": json 
+                "insight": json.loads(json_result) 
             }
         )
 
-    return result.fetchall()
+    return listed
 
 def createUser(username, hashed, display_name, mode, department, role):
     if not cursor:
