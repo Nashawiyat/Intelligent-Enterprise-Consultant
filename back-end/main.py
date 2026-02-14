@@ -1,13 +1,13 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends
 from contextlib import asynccontextmanager
-import json
 import os
 import asyncio
 
-from db_helper_functions import init_db_insights, close_db_insights, recordInsight, getLatestInsightRecordFromDB
-from helper_classes import PromptRequest, InsightRequest, SimulationRequest, BaseSimulationRequest
-
-# LangGraph agent to process queries
+from db_helper_functions import init_db, close_db, recordInsight, getLatestInsightRecordFromDB, createUser, getUserHash, getUserDetails
+from helper_classes import LoginRequest, PromptRequest, InsightRequest, BaseSimulationRequest, RegistrationRequest
+from hashing import hash_password, verify_hash
+from token_cryptography import generateToken
+from access_validation import admin_access_required, getUserFromToken
 
 from dotenv import load_dotenv
 
@@ -17,6 +17,8 @@ load_dotenv()
 if not os.getenv("GROQ_API_KEY"):
     print("ERROR: GROQ_API_KEY not found in .env")
     exit(1)
+
+# LangGraph agent to process queries
 from agent import enterprise_agent
 
 # Set to true to have system get latest insights periodically from LLM
@@ -80,13 +82,13 @@ async def lifespan(app: FastAPI):
     # Startup function
     if PERIODIC_UPDATES:
         task = asyncio.create_task(retrievePeriodicUpdatedInsights())
-    init_db_insights()
+    init_db()
 
     # Run teh app
     yield
 
     # Close database connection when no longer required
-    close_db_insights()
+    close_db()
 
     if PERIODIC_UPDATES:
         # Cancel the task once the app closes
@@ -128,7 +130,7 @@ async def retrieveSimulationResults(request: Request, set_fields: BaseSimulation
     return response
 
 @app.post("/simulation")
-async def getSimulation(request: Request, set_fields: BaseSimulationRequest):
+async def getSimulation(request: Request, set_fields: BaseSimulationRequest, current_user: str = Depends(getUserFromToken)):
     return await retrieveSimulationResults(request, set_fields)
 
 # Function to get latest row from insights table in the database 
@@ -147,14 +149,14 @@ async def getLatestInsights(domain, role_context):
     return insight_result
 
 @app.post("/insights")
-async def getInsights(data: InsightRequest):
+async def getInsights(data: InsightRequest, current_user: str = Depends(getUserFromToken)):
     domain = data.domain
     role_context = data.role_context
 
     return await getLatestInsights(domain, role_context)
 
 @app.post("/prompt")
-async def getPrompt(data: PromptRequest):
+async def getPrompt(data: PromptRequest, current_user: str = Depends(getUserFromToken)):
     inputs = {
         "messages": [
             ("user", data.prompt),
@@ -166,3 +168,31 @@ async def getPrompt(data: PromptRequest):
 
     json_result = await query_langgraph(**inputs)
     return json_result
+
+@app.post("/auth/login")
+async def login(data: LoginRequest):
+    recorded_hash = getUserHash(data.username)
+    if recorded_hash is None:
+        return {"detail": "User does not exist"}
+    
+    if verify_hash(data.password, recorded_hash[0]):
+        token = generateToken(data.username)
+        return {
+            "token": token,
+            "user": getUserDetails(data.username)
+        }
+    else:
+        return {"detail": "Invalid credentials"}
+
+@app.post("/admin/users")
+async def addNewUser(data: RegistrationRequest, current_user: str = Depends(admin_access_required)):
+    hashed = hash_password(data.password)
+    data_dict = data.__dict__
+    del data_dict['password']
+    data_dict["hashed"] = hashed
+
+    createUser(**data_dict)
+    return {
+        "detail": f"User {data.username} created",
+        "user": getUserDetails(data.username)
+    }

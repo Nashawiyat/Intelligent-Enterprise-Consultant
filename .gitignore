@@ -1,3 +1,4 @@
 .env
+.venv/
 /back-end/__pycache__
 /back-end/agent/__pycache__

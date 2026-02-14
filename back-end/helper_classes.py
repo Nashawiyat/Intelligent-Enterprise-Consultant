@@ -1,6 +1,18 @@
 from pydantic import BaseModel
 from typing import Literal, TypeAlias, Union
 
+class RegistrationRequest(BaseModel):
+    username: str
+    password: str
+    display_name: str
+    mode: str
+    department: str
+    role: str
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
 class InsightRequest(BaseModel):
     domain: str
     role_context: str
