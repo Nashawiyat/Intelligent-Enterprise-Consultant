@@ -28,14 +28,61 @@ workflow.add_node("security_gatekeeper", security_node)
 # Entry Point
 workflow.set_entry_point("orchestrator")
 
+def identify_intent_route(state: AgentState):
+    messages = state.get("messages", [])
+    user_text = ""
+    if messages:
+        last_msg = messages[-1]
+        user_text = last_msg[1] if isinstance(last_msg, tuple) else str(getattr(last_msg, "content", ""))
+    lower_text = (user_text or "").lower()
+
+    fact_sheet_history = state.get("fact_sheet_history", [])
+    has_history = isinstance(fact_sheet_history, list) and len(fact_sheet_history) > 0
+    followup_keywords = [
+        "elaborate", "why", "who", "fix", "explain", "mean",
+        "what does", "what is", "how did", "how is", "tell me",
+        "break down", "clarify", "more detail",
+        "action", "actions", "should i", "should we", "amend",
+        "steps", "recommend", "do about", "what can"
+    ]
+    if has_history and any(k in lower_text for k in followup_keywords):
+        return "causal_reasoner"
+
+    intent_mode = str(state.get("intent_mode", "STANDARD")).upper()
+    if intent_mode == "COMPETITIVE_INTEL":
+        return "sql_specialist"
+
+    interaction_mode = str(state.get("interaction_mode", "")).upper()
+    if interaction_mode in {"SOCIAL", "ANALYTICAL"}:
+        return "causal_reasoner" if interaction_mode == "SOCIAL" else "sql_specialist"
+
+    analytical_keywords = [
+        "simulate", "simulation", "health-check", "health check", "healthcheck", "anomaly", "audit",
+        "forensic", "revenue", "margin", "latency", "pipeline", "nps", "churn", "cash flow", "expenditure",
+        "trend", "correlation", "projection", "what if"
+    ]
+    social_keywords = ["hi", "hello", "hey", "how are you", "thanks", "thank you"]
+
+    if any(k in lower_text for k in analytical_keywords):
+        return "sql_specialist"
+    if any(k in lower_text for k in social_keywords) or not lower_text.strip():
+        return "causal_reasoner"
+    return "causal_reasoner"
+
 # Router to check if user is asking for a LIVE insight or a simulation
 def route_after_sql(state: AgentState):
     """After getting SQL baseline, decide if we need a simulation or direct reasoning."""
+    interaction_mode = state.get("interaction_mode")
+    intent_mode = str(state.get("intent_mode", "STANDARD")).upper()
     if state.get("is_simulation", False):
         return "simulation_specialist"
-    if len(state.get("messages", [])) > 1:
+    if intent_mode == "COMPETITIVE_INTEL":
         return "causal_reasoner"
-    return "quantitative_audit"
+    if interaction_mode == "SOCIAL":
+        return "causal_reasoner"
+    if interaction_mode == "ANALYTICAL":
+        return "quantitative_audit"
+    return "causal_reasoner"
 
 def route_after_reasoner(state: AgentState):
     """If reasoning needs more data, loop back to SQL; otherwise continue."""
@@ -53,8 +100,15 @@ def route_after_filter(state: AgentState):
 # Entry point
 workflow.set_entry_point("orchestrator")
 
-# orchestrator always goes to SQL first if data is missing
-workflow.add_edge("orchestrator", "sql_specialist")
+# Route intent-aware traffic after orchestration
+workflow.add_conditional_edges(
+    "orchestrator",
+    identify_intent_route,
+    {
+        "causal_reasoner": "causal_reasoner",
+        "sql_specialist": "sql_specialist"
+    }
+)
 
 # Conditional routing
 workflow.add_conditional_edges(

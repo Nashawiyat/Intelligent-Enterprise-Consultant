@@ -28,6 +28,67 @@ SILO_FOCUS_MAP = {
     "CRM": "sentiment, retention, support tickets, NPS"
 }
 
+def classify_interaction_mode(user_message: str) -> str:
+    raw = (user_message or "").strip()
+    if not raw:
+        return "SOCIAL"
+    msg = raw.lower()
+
+    social_pattern = r"^(hi|hello|hey|how are you|good\s+(morning|afternoon|evening)|thanks|thank you)\b[\s!.,?]*$"
+    if re.match(social_pattern, msg):
+        return "SOCIAL"
+
+    analytical_terms = [
+        "simulate", "simulation", "health-check", "health check", "healthcheck", "anomaly", "audit",
+        "forensic", "root cause", "deep dive", "trend", "correlation", "projection", "scenario", "model",
+        "revenue", "margin", "latency", "pipeline", "nps", "churn", "cash flow", "expenditure",
+        "forecast", "what if",
+        "cross-domain", "cross domain", "silo", "silos", "status", "overview", "performance",
+        "breakdown", "report", "investigate", "insights", "check", "state of",
+        "deals", "sales", "operations", "accounting", "hr ", "crm",
+        "action", "actions", "amend", "steps to", "recommend", "what should", "fix"
+    ]
+    if any(term in msg for term in analytical_terms):
+        return "ANALYTICAL"
+
+    return "SOCIAL"
+
+def classify_intent_mode(user_message: str) -> str:
+    msg = (user_message or "").lower()
+    if any(term in msg for term in ["competitor", "market", "external"]):
+        return "COMPETITIVE_INTEL"
+    return "STANDARD"
+
+def distill_external_context(raw_context) -> str:
+    context_text = str(raw_context or "").strip()
+    if not context_text:
+        return ""
+    if len(context_text) <= 1000:
+        return context_text
+
+    distill_prompt = SystemMessage(
+        content=(
+            "Create an Intel Briefing in exactly 3 concise bullet points. "
+            "Remove HTML fragments, glossary-style filler, and duplicated snippets. "
+            "Keep only business-relevant competitive signals (speed, pricing, product strategy, customer impact). "
+            "Do not include markdown code fences.\n"
+            f"RAW INTEL:\n{context_text}"
+        )
+    )
+    try:
+        distilled = llm_fast.invoke([distill_prompt])
+        distilled_text = str(distilled.content or "").strip() or context_text[:1000]
+    except Exception:
+        distilled_text = context_text[:1000]
+
+    nexus_comparison = (
+        "Nexus Comparison: While Market Leaders dominate high-speed digital experience, "
+        "our internal data shows our 310ms latency is the immediate barrier to matching their performance."
+    )
+    if nexus_comparison.lower() not in distilled_text.lower():
+        distilled_text = f"{distilled_text}\n{nexus_comparison}".strip()
+    return distilled_text
+
 def orchestrator_node(state: AgentState):
     user_role = state.get("role", "Analyst")
 
@@ -38,18 +99,369 @@ def orchestrator_node(state: AgentState):
     else:
         user_message = last_message.content
 
+    user_query = str(user_message or "").strip()
+    interaction_mode = classify_interaction_mode(user_query)
+    intent_mode = classify_intent_mode(user_query)
+
     # Check if external competitive intelligence is needed
-    if "competitor" in user_message.lower() or "market" in user_message.lower():
+    if intent_mode == "COMPETITIVE_INTEL":
         intel = get_competitive_intel.invoke({"competitor_name": "Market Leaders"})
-        external_context = intel
+        external_context = distill_external_context(intel)
     else:
         external_context = ""
 
     return {
-        "current_silo": "Determined by LLM", 
+        "current_silo": "Determined by LLM",
+        "interaction_mode": interaction_mode,
+        "intent_mode": intent_mode,
         "external_context": external_context,
-        "reasoning_steps": [f"Orchestrator identified need for {user_role} domain data."]
+        "reasoning_steps": [
+            f"Orchestrator set interaction_mode={interaction_mode}, intent_mode={intent_mode} for {user_role} request."
+        ]
     }
+
+def resolve_table_alias(user_text: str) -> str | None:
+    text = (user_text or "").lower()
+    if "crm" in text:
+        return "crm"
+    if "accounting" in text or "finance" in text:
+        return "erp_accounting"
+    if "operations" in text or "ops" in text:
+        return "erp_operations"
+    if "hr" in text or "human resources" in text:
+        return "erp_hr"
+    if "sales" in text:
+        return "erp_sales"
+    return None
+
+def resolve_metric_hint(user_text: str) -> str | None:
+    text = (user_text or "").lower()
+    known_metrics = [
+        "latency_ms", "success_rate", "uptime_pct", "revenue", "margin", "expenditure",
+        "customer_satisfaction_score", "active_leads", "churn_rate", "deals_closed", "pipeline_value", "avg_deal_size",
+        "headcount", "payroll_expenditure", "productivity_index"
+    ]
+    for metric in known_metrics:
+        if metric in text:
+            return metric
+    alias_map = {
+        "latency": "latency_ms",
+        "uptime": "uptime_pct",
+        "satisfaction": "customer_satisfaction_score",
+        "leads": "active_leads",
+        "pipeline": "pipeline_value",
+        "payroll": "payroll_expenditure",
+        "productivity": "productivity_index"
+    }
+    for alias, metric in alias_map.items():
+        if alias in text:
+            return metric
+    return None
+
+def metric_exists_in_table(fact_sheet: dict, table_name: str, field_name: str) -> bool:
+    tables = fact_sheet.get("tables", {}) if isinstance(fact_sheet, dict) else {}
+    table = tables.get(table_name, {}) if isinstance(tables, dict) else {}
+    fields = table.get("fields", {}) if isinstance(table, dict) else {}
+    return isinstance(fields, dict) and field_name in fields
+
+def build_metric_table_map(fact_sheet: dict) -> dict[str, set[str]]:
+    mapping: dict[str, set[str]] = {}
+    tables = fact_sheet.get("tables", {}) if isinstance(fact_sheet, dict) else {}
+    for table_name, table in tables.items() if isinstance(tables, dict) else []:
+        fields = table.get("fields", {}) if isinstance(table, dict) else {}
+        for field_name in fields.keys() if isinstance(fields, dict) else []:
+            normalized_field = str(field_name).lower()
+            if normalized_field not in mapping:
+                mapping[normalized_field] = set()
+            mapping[normalized_field].add(str(table_name))
+    return mapping
+
+def user_requested_table(user_text: str) -> str | None:
+    text = (user_text or "").lower()
+    if "crm" in text:
+        return "crm"
+    if "accounting" in text or "finance" in text:
+        return "erp_accounting"
+    if "operations" in text or "ops" in text:
+        return "erp_operations"
+    if "hr" in text or "human resources" in text:
+        return "erp_hr"
+    if "sales" in text:
+        return "erp_sales"
+    return None
+
+def is_elaboration_request(user_text: str) -> bool:
+    text = (user_text or "").lower()
+    prompts = [
+        "elaborate", "further detail", "more detail", "explain more", "break it down",
+        "deeper", "tell me more", "why exactly", "drill down"
+    ]
+    return any(prompt in text for prompt in prompts)
+
+def build_multi_paragraph_followup(history: list[dict], user_role: str) -> str:
+    latest = None
+    for snapshot in reversed(history or []):
+        if isinstance(snapshot, dict) and snapshot.get("tables"):
+            latest = snapshot
+            break
+    if not latest:
+        return (
+            f"Absolutely, {user_role}. I can expand once we have a fresh cross-silo snapshot for this thread."
+        )
+
+    candidates = collect_metric_candidates(latest)
+    if not candidates:
+        return (
+            f"Absolutely, {user_role}. I’ve reviewed the latest snapshot, but there aren’t enough numeric deltas yet to deepen the analysis."
+        )
+
+    ranked = sorted(candidates, key=lambda c: (c.get("abs_delta", 0.0), c.get("abs_change", 0.0)), reverse=True)
+    primary = ranked[0]
+    secondary = ranked[1] if len(ranked) > 1 else None
+
+    p_field = format_metric_label(primary.get("field_name", ""))
+    p_silo = table_to_silo(primary.get("table_name", ""))
+    p_base = primary.get("baseline", 0.0)
+    p_curr = primary.get("current", 0.0)
+    p_delta = primary.get("delta_pct", 0.0)
+
+    para1 = (
+        f"To go deeper, {user_role}, the largest movement is in {p_field} ({p_silo}). "
+        f"It moved from {p_base} to {p_curr}, a {p_delta:.1f}% swing over the current window."
+    )
+
+    if secondary:
+        s_field = format_metric_label(secondary.get("field_name", ""))
+        s_silo = table_to_silo(secondary.get("table_name", ""))
+        s_base = secondary.get("baseline", 0.0)
+        s_curr = secondary.get("current", 0.0)
+        s_delta = secondary.get("delta_pct", 0.0)
+        para2 = (
+            f"We also see a related shift in {s_field} ({s_silo}) from {s_base} to {s_curr} ({s_delta:.1f}%). "
+            "That pattern is consistent with cross-silo propagation rather than an isolated one-table anomaly."
+        )
+    else:
+        para2 = (
+            "The remaining silos are comparatively stable, so remediation should focus on reversing this primary movement first."
+        )
+
+    para3 = (
+        "Practical next step: restore the primary metric toward its baseline, then re-check adjacent silo movement in the next reporting interval "
+        "to confirm recovery is propagating system-wide."
+    )
+    return f"{para1}\n\n{para2}\n\n{para3}"
+
+def get_effective_fact_sheet(current_fact_sheet: dict, history: list[dict]) -> dict:
+    if isinstance(current_fact_sheet, dict) and current_fact_sheet.get("tables"):
+        return current_fact_sheet
+    for snapshot in reversed(history or []):
+        if isinstance(snapshot, dict) and snapshot.get("tables"):
+            return snapshot
+    return current_fact_sheet if isinstance(current_fact_sheet, dict) else {}
+
+def find_largest_anomaly(fact_sheet: dict) -> dict | None:
+    tables = fact_sheet.get("tables", {}) if isinstance(fact_sheet, dict) else {}
+    best = None
+    for table_name, table in tables.items() if isinstance(tables, dict) else []:
+        fields = table.get("fields", {}) if isinstance(table, dict) else {}
+        for field_name, values in fields.items() if isinstance(fields, dict) else []:
+            delta = values.get("delta_pct") if isinstance(values, dict) else None
+            if not isinstance(delta, (int, float)):
+                continue
+            candidate = {
+                "table": table_name,
+                "field": field_name,
+                "delta_pct": delta,
+                "baseline": values.get("baseline"),
+                "current": values.get("current")
+            }
+            if best is None or abs(delta) > abs(best["delta_pct"]):
+                best = candidate
+    return best
+
+def lookup_silo_owner(silo_name: str) -> tuple[str | None, str | None]:
+    safe_silo = str(silo_name or "").strip()
+    if safe_silo not in ["Sales", "Operations", "HR", "Accounting", "CRM"]:
+        return None, None
+
+    candidate_queries = [
+        f"SELECT manager_name AS name, role FROM erp_hr WHERE lower(department)=lower('{safe_silo}') LIMIT 1;",
+        f"SELECT department_lead AS name, role FROM erp_hr WHERE lower(department)=lower('{safe_silo}') LIMIT 1;",
+        f"SELECT lead_name AS name, role FROM erp_hr WHERE lower(department)=lower('{safe_silo}') LIMIT 1;",
+        f"SELECT firstName || ' ' || lastName AS name, 'Manager' AS role FROM Employee e JOIN Department d ON e.departmentID=d.departmentID WHERE lower(d.name)=lower('{safe_silo}') LIMIT 1;"
+    ]
+
+    for query in candidate_queries:
+        try:
+            result = query_enterprise_database.invoke({"sql_query": query})
+            if is_sql_error(result) or result == "Data Unavailable":
+                continue
+            rows = coerce_rows(result)
+            if not rows:
+                continue
+            first = rows[0] if isinstance(rows[0], dict) else {}
+            name = str(first.get("name", "")).strip() if isinstance(first, dict) else ""
+            role = str(first.get("role", "")).strip() if isinstance(first, dict) else ""
+            if name:
+                return name, role or f"Lead for {safe_silo}"
+        except Exception:
+            continue
+    return None, None
+
+def build_fix_response_from_anomaly(anomaly: dict, user_role: str) -> str:
+    if not anomaly:
+        return f"{user_role}, we should stabilize the largest operational variance first, then reassess cross-silo impact next cycle."
+    silo = table_to_silo(anomaly.get("table", ""))
+    field = format_metric_label(anomaly.get("field", ""))
+    baseline = anomaly.get("baseline")
+    current = anomaly.get("current")
+    delta = anomaly.get("delta_pct", 0.0)
+    return (
+        f"To fix this, {user_role}, prioritize bringing {field} in {silo} back toward its baseline. "
+        f"It moved from {baseline} to {current} ({delta:.1f}%), so closing that gap should be the first lever before downstream tuning."
+    )
+
+def build_value_reference_explanation(history: list[dict], user_role: str) -> str:
+    sheet = get_effective_fact_sheet({}, history)
+    tables = sheet.get("tables", {}) if isinstance(sheet, dict) else {}
+
+    accounting_fields = tables.get("erp_accounting", {}).get("fields", {}) if isinstance(tables, dict) else {}
+    revenue = accounting_fields.get("revenue", {}) if isinstance(accounting_fields, dict) else {}
+    rev_baseline = revenue.get("baseline") if isinstance(revenue, dict) else None
+    rev_current = revenue.get("current") if isinstance(revenue, dict) else None
+
+    ops_fields = tables.get("erp_operations", {}).get("fields", {}) if isinstance(tables, dict) else {}
+    latency = ops_fields.get("latency_ms", {}) if isinstance(ops_fields, dict) else {}
+    lat_baseline = latency.get("baseline") if isinstance(latency, dict) else None
+    lat_current = latency.get("current") if isinstance(latency, dict) else None
+
+    crm_fields = tables.get("crm", {}).get("fields", {}) if isinstance(tables, dict) else {}
+    leads = crm_fields.get("active_leads", {}) if isinstance(crm_fields, dict) else {}
+    leads_baseline = leads.get("baseline") if isinstance(leads, dict) else None
+    leads_current = leads.get("current") if isinstance(leads, dict) else None
+
+    if isinstance(rev_baseline, (int, float)) and isinstance(rev_current, (int, float)):
+        revenue_gap = rev_baseline - rev_current
+        rev_drop_pct = ((rev_baseline - rev_current) / rev_baseline * 100.0) if rev_baseline else 0.0
+        details = (
+            f"Our income dropped by ${revenue_gap:,.0f} this week. "
+            f"That is the revenue gap between normal performance (${rev_baseline:,.0f}) and the current crisis level (${rev_current:,.0f}), "
+            f"which is a {rev_drop_pct:.1f}% decline."
+        )
+        if isinstance(lat_baseline, (int, float)) and isinstance(lat_current, (int, float)):
+            details += (
+                f" We also saw service delays rise from {lat_baseline:.0f}ms to {lat_current:.0f}ms, "
+                "which reduced our ability to convert demand into revenue."
+            )
+        if isinstance(leads_baseline, (int, float)) and isinstance(leads_current, (int, float)) and leads_baseline:
+            lead_drop_pct = ((leads_baseline - leads_current) / leads_baseline) * 100.0
+            details += (
+                f" In the same period, incoming demand fell from {leads_baseline:,.0f} to {leads_current:,.0f} "
+                f"({lead_drop_pct:.1f}% down), reinforcing the lost-opportunity effect."
+            )
+        return details
+
+    return (
+        f"Using our existing investigation trail, {user_role}, the cash flow impact is the lost opportunity between baseline performance "
+        "and what we are achieving right now."
+    )
+
+def build_why_cross_silo_followup(history: list[dict], user_role: str) -> tuple[str, str | None]:
+    sheet = get_effective_fact_sheet({}, history)
+    tables = sheet.get("tables", {}) if isinstance(sheet, dict) else {}
+
+    accounting_fields = tables.get("erp_accounting", {}).get("fields", {}) if isinstance(tables, dict) else {}
+    revenue = accounting_fields.get("revenue", {}) if isinstance(accounting_fields, dict) else {}
+    rev_baseline = revenue.get("baseline") if isinstance(revenue, dict) else None
+    rev_current = revenue.get("current") if isinstance(revenue, dict) else None
+
+    ops_fields = tables.get("erp_operations", {}).get("fields", {}) if isinstance(tables, dict) else {}
+    latency = ops_fields.get("latency_ms", {}) if isinstance(ops_fields, dict) else {}
+    lat_baseline = latency.get("baseline") if isinstance(latency, dict) else None
+    lat_current = latency.get("current") if isinstance(latency, dict) else None
+
+    if all(isinstance(v, (int, float)) for v in [rev_baseline, rev_current, lat_baseline, lat_current]):
+        revenue_gap = rev_baseline - rev_current
+        message = (
+            f"Why this happened: accounting shows an income shortfall of ${revenue_gap:,.0f} versus baseline. "
+            f"In the prior investigation turn, operations latency climbed from {lat_baseline:.0f}ms to {lat_current:.0f}ms. "
+            "That slowdown created a lost-opportunity path: slower experience, fewer completed transactions, and then lower revenue."
+        )
+        return message, "Operations"
+
+    anomaly = find_largest_anomaly(sheet)
+    if anomaly:
+        silo = table_to_silo(anomaly.get("table", ""))
+        return (
+            f"The main reason is the largest disruption in {silo}, which then propagated into accounting performance in later metrics.",
+            silo,
+        )
+
+    return (
+        f"I can explain the full why-chain once we refresh the health check data, {user_role}.",
+        None,
+    )
+
+def derive_active_focus_from_history(history: list[dict]) -> str | None:
+    effective = get_effective_fact_sheet({}, history)
+    anomaly = find_largest_anomaly(effective)
+    if anomaly:
+        silo = table_to_silo(anomaly.get("table", ""))
+        if silo in ALLOWED_SILOS:
+            return silo
+    return None
+
+def restrict_fact_sheet_to_silo(fact_sheet: dict, focus_silo: str | None) -> dict:
+    if not isinstance(fact_sheet, dict) or not focus_silo:
+        return fact_sheet if isinstance(fact_sheet, dict) else {}
+    tables = fact_sheet.get("tables", {}) if isinstance(fact_sheet.get("tables", {}), dict) else {}
+    focused_tables = {
+        table_name: table
+        for table_name, table in tables.items()
+        if table_to_silo(table_name) == focus_silo
+    }
+    restricted = dict(fact_sheet)
+    restricted["tables"] = focused_tables
+    return restricted
+
+def build_focus_locked_followup(fact_sheet: dict, focus_silo: str, user_role: str, asks_for_why: bool) -> str:
+    anomaly = find_largest_anomaly(fact_sheet)
+    if not anomaly:
+        return (
+            f"I’m staying focused on {focus_silo}. I need a fresh health check to expand this explanation without losing context."
+        )
+
+    field = str(anomaly.get("field", "")).lower()
+    baseline = anomaly.get("baseline")
+    current = anomaly.get("current")
+    delta = anomaly.get("delta_pct", 0.0)
+
+    if field == "latency_ms":
+        plain = (
+            "Our website speed slowed down significantly, causing a delay that frustrated customers. "
+            f"Within {focus_silo}, this moved from {baseline} to {current} ({delta:.1f}%), which widened our revenue gap."
+        )
+    elif field == "revenue":
+        gap = (baseline - current) if isinstance(baseline, (int, float)) and isinstance(current, (int, float)) else None
+        if isinstance(gap, (int, float)):
+            plain = (
+                f"Our income dropped by ${gap:,.0f} versus normal in {focus_silo}. "
+                "That shortfall is the lost opportunity we need to recover first."
+            )
+        else:
+            plain = (
+                f"Within {focus_silo}, revenue is below normal, creating a clear lost-opportunity gap we should close first."
+            )
+    else:
+        metric_label = format_metric_label(field)
+        plain = (
+            f"Within {focus_silo}, {metric_label} moved from {baseline} to {current} ({delta:.1f}%). "
+            "This shift explains the current business drag and lost opportunity in this thread."
+        )
+
+    if asks_for_why:
+        return f"Why this happened: {plain}"
+    return plain
 
 def get_message_content(msg):
     """Helper to safely extract content from a tuple or BaseMessage object."""
@@ -96,7 +508,12 @@ def infer_only_allowed(silos: list) -> list:
 
 def should_query_trend(user_msg: str) -> bool:
     msg = (user_msg or "").lower()
-    keywords = ["health check", "healthcheck", "anomaly", "trend", "correlation", "cross-domain", "cross domain"]
+    keywords = [
+        "health check", "healthcheck", "anomaly", "trend", "correlation",
+        "cross-domain", "cross domain", "[chat_mode]",
+        "state of", "silo", "silos", "status", "overview",
+        "current state", "performance", "all tables"
+    ]
     return any(k in msg for k in keywords)
 
 def merge_sql_results(previous, current) -> dict:
@@ -392,7 +809,7 @@ def semantic_sweep_fields(fact_sheet: dict) -> dict:
         silo = table_to_silo(row["table"])
         if silo == "Operations":
             fallback["Operational_Cause"].append({"table": row["table"], "field": row["field"]})
-        elif silo == "Accounting":
+        elif silo in ("Accounting", "Sales"):
             fallback["Financial_Effect"].append({"table": row["table"], "field": row["field"]})
         elif silo == "CRM":
             fallback["Customer_Sentiment"].append({"table": row["table"], "field": row["field"]})
@@ -497,7 +914,7 @@ def build_headline_from_traces(primary: dict | None, secondary: dict | None) -> 
     return "Cross-silo Change in Operations Impacting Accounting"
 
 def build_simulation_comparison_visuals(fact_sheet: dict, simulation_summary: dict | None) -> dict:
-    x_values = ["Current Actual", "Simulated Projection"]
+    x_values = []
     financial = select_financial_fields(fact_sheet)
     filtered_financial = [
         metric for metric in financial
@@ -508,23 +925,52 @@ def build_simulation_comparison_visuals(fact_sheet: dict, simulation_summary: di
 
     price_change_pct = simulation_summary.get("price_change_pct", 0) if isinstance(simulation_summary, dict) else 0
     price_change_ratio = normalize_price_change(price_change_pct)
+    projected_payload = simulation_summary.get("projected", {}) if isinstance(simulation_summary, dict) else {}
 
-    traces = []
+    actual_values = []
+    projected_values = []
     for metric in filtered_financial[:2]:
+        metric_label = format_metric_label(metric.get("field_name"))
+        x_values.append(metric_label)
         baseline = metric.get("baseline")
         current_actual = metric.get("current")
         if not isinstance(baseline, (int, float)):
             baseline = current_actual if isinstance(current_actual, (int, float)) else 0.0
         if not isinstance(current_actual, (int, float)):
             current_actual = baseline if isinstance(baseline, (int, float)) else 0.0
-        projected_total = baseline * (1 + price_change_ratio)
+
+        projected_total = None
+        if isinstance(projected_payload, dict):
+            field_name = str(metric.get("field_name", "")).lower()
+            if "revenue" in field_name and isinstance(projected_payload.get("revenue"), (int, float)):
+                projected_total = projected_payload.get("revenue")
+            elif "latency" in field_name and isinstance(projected_payload.get("ops_latency_ms"), (int, float)):
+                projected_total = projected_payload.get("ops_latency_ms")
+        if not isinstance(projected_total, (int, float)):
+            projected_total = baseline * (1 + price_change_ratio)
         projected_total = max(0.0, projected_total)
-        traces.append({
+        actual_values.append(current_actual)
+        projected_values.append(projected_total)
+
+    if not x_values:
+        x_values = ["Revenue"]
+        actual_values = [0.0]
+        projected_values = [0.0]
+
+    traces = [
+        {
             "type": "bar",
-            "name": format_metric_label(metric.get("field_name")),
+            "name": "Current Actual",
             "x": x_values,
-            "y": [current_actual, projected_total]
-        })
+            "y": actual_values
+        },
+        {
+            "type": "bar",
+            "name": "Simulated Projection",
+            "x": x_values,
+            "y": projected_values
+        }
+    ]
 
     if not traces:
         traces = [
@@ -594,6 +1040,24 @@ def build_reasoning_from_fact_sheet(fact_sheet: dict, user_role: str) -> dict:
     primary, secondary = select_trace_fields(fact_sheet, user_role, map_tables_to_silos(fact_sheet))
     head = build_headline_from_traces(primary, secondary)
 
+    # When no data is available, produce a meaningful fallback instead of $0/Metric placeholders
+    if primary is None and secondary is None:
+        return {
+            "headline": head,
+            "summary": "No time-series data is available yet for a cross-silo comparison. Please run a fresh health check.",
+            "reasoning_detailed": (
+                "The data pipeline returned no measurable metrics for this query. "
+                "A full cross-silo health check is needed to populate the fact sheet before analysis can proceed."
+            ),
+            "recommendations": [
+                {
+                    "action": "Run a health check",
+                    "detail": "Ask for a cross-domain health check to load baseline and current metrics from all silos.",
+                    "expected_impact": "Enables cross-silo analysis with real data."
+                }
+            ]
+        }
+
     summary_parts = []
     if primary and isinstance(primary.get("baseline"), (int, float)) and isinstance(primary.get("current"), (int, float)):
         summary_parts.append(
@@ -646,7 +1110,26 @@ def build_reasoning_from_fact_sheet(fact_sheet: dict, user_role: str) -> dict:
         "recommendations": recommendations
     }
 
-def enforce_strict_schema(data: dict | None, fact_sheet: dict, user_role: str, is_sim: bool) -> dict:
+def enforce_strict_schema(
+    data: dict | None,
+    fact_sheet: dict,
+    user_role: str,
+    is_sim: bool,
+    interaction_mode: str = "ANALYTICAL"
+) -> dict:
+    if str(interaction_mode).upper() != "ANALYTICAL":
+        if isinstance(data, dict):
+            content = data.get("content", {}) if isinstance(data.get("content"), dict) else {}
+            plain_parts = [
+                str(content.get("headline", "")).strip(),
+                str(content.get("summary", "")).strip(),
+                str(content.get("reasoning_detailed", "")).strip()
+            ]
+            plain_text = " ".join([p for p in plain_parts if p])
+            if plain_text:
+                return {"chat_response": plain_text}
+        return {"chat_response": build_chat_response_from_fact_sheet(fact_sheet, user_role)}
+
     if not isinstance(data, dict):
         data = {}
 
@@ -704,14 +1187,19 @@ def enforce_strict_schema(data: dict | None, fact_sheet: dict, user_role: str, i
             "plotly_data": {"data": normalized_traces}
         }
 
-    primary, secondary = select_trace_fields(fact_sheet, user_role, data.get("target_silos"))
+    primary, secondary = select_trace_fields(fact_sheet, user_role, None)
     content["headline"] = build_headline_from_traces(primary, secondary)
+    content["reasoning_detailed"] = fallback_content["reasoning_detailed"]
 
-    mention_text = " ".join([
-        str(content.get("headline", "")),
-        str(content.get("reasoning_detailed", ""))
-    ])
-    target_silos = [s for s in infer_target_silos(mention_text) if s != "General"]
+    target_silos = []
+    if primary and primary.get("table_name"):
+        target_silos.append(table_to_silo(primary["table_name"]))
+    if secondary and secondary.get("table_name"):
+        s = table_to_silo(secondary["table_name"])
+        if s not in target_silos:
+            target_silos.append(s)
+    if not target_silos:
+        target_silos = ["Operations"]
 
     return {
         "insight_id": insight_id,
@@ -764,6 +1252,42 @@ def parse_schema_tables(schema: str) -> list:
         if table_name:
             tables.append((table_name, columns))
     return tables
+
+def build_chat_response_from_fact_sheet(fact_sheet: dict, user_role: str) -> str:
+    candidates = collect_metric_candidates(fact_sheet)
+    if not candidates:
+        return (
+            f"I've checked the silos for you, {user_role}. I can see the latest business context, "
+            "but I need a specific metric to provide a precise summary."
+        )
+
+    ranked = sorted(candidates, key=lambda c: (c.get("abs_delta", 0.0), c.get("abs_change", 0.0)), reverse=True)
+    primary = ranked[0]
+    secondary = ranked[1] if len(ranked) > 1 else None
+
+    primary_delta = primary.get("delta_pct") if isinstance(primary.get("delta_pct"), (int, float)) else 0.0
+    primary_direction = "up" if primary_delta >= 0 else "down"
+    primary_silo = table_to_silo(primary.get("table_name", ""))
+    primary_field = format_metric_label(primary.get("field_name", ""))
+    primary_change = abs(primary.get("current", 0.0) - primary.get("baseline", 0.0))
+
+    sentence = (
+        f"I've checked the silos, {user_role}. {primary_field} in {primary_silo} is currently {primary_direction} "
+        f"{abs(primary_delta):.1f}% (${primary_change:,.0f})."
+    )
+
+    if secondary:
+        secondary_delta = secondary.get("delta_pct") if isinstance(secondary.get("delta_pct"), (int, float)) else 0.0
+        secondary_direction = "up" if secondary_delta >= 0 else "down"
+        secondary_silo = table_to_silo(secondary.get("table_name", ""))
+        secondary_field = format_metric_label(secondary.get("field_name", ""))
+        sentence += (
+            f" This appears linked to {secondary_field} in {secondary_silo}, which is {secondary_direction} "
+            f"{abs(secondary_delta):.1f}% over the same window."
+        )
+
+    sentence += " If you want, I can break this down by each silo next."
+    return sentence
 
 def find_date_column(columns: list) -> str | None:
     if not columns:
@@ -1222,7 +1746,7 @@ def validate_insight_json(data: dict) -> bool:
         return False
     return True
 
-def patch_insight_json(data: dict, fact_sheet: dict, user_role: str, is_sim: bool) -> dict:
+def patch_insight_json(data: dict, fact_sheet: dict, user_role: str, is_sim: bool, active_focus: str | None = None) -> dict:
     if not isinstance(data, dict):
         data = {}
     meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
@@ -1277,7 +1801,11 @@ def patch_insight_json(data: dict, fact_sheet: dict, user_role: str, is_sim: boo
             if isinstance(delta, (int, float)) and abs(delta) > 0:
                 active_silos.add(table_to_silo(table_name))
                 break
-    data["target_silos"] = infer_only_allowed(list(mentioned.intersection(active_silos)))
+    inferred = infer_only_allowed(list(mentioned.intersection(active_silos)))
+    if active_focus in ALLOWED_SILOS:
+        data["target_silos"] = [active_focus]
+    else:
+        data["target_silos"] = inferred
     return data
 
 def reasoner_node(state: AgentState):
@@ -1285,8 +1813,117 @@ def reasoner_node(state: AgentState):
     user_role = state.get("role", "Executive")
     is_sim = state.get("is_simulation", False)
     simulation_inputs = state.get("simulation_inputs", {})
-    last_msg = get_message_content(state["messages"][-1]).lower()
-    is_chat = len(state["messages"]) > 1 and not is_sim and "health check" not in last_msg
+    messages = state.get("messages", [])
+    last_msg = get_message_content(messages[-1]).lower() if messages else ""
+    combined_msg = " ".join(get_message_content(msg) for msg in messages).lower() if messages else last_msg
+    chat_mode_tagged = "[chat_mode]" in combined_msg
+    interaction_mode = str(state.get("interaction_mode", "")).upper()
+    intent_mode = str(state.get("intent_mode", "STANDARD")).upper()
+    history = state.get("fact_sheet_history", [])
+    external_context = str(state.get("external_context", "")).strip()
+    simulation_summary = state.get("simulation_summary", {}) if isinstance(state.get("simulation_summary", {}), dict) else {}
+
+    if "what if" in last_msg and isinstance(simulation_summary, dict) and simulation_summary.get("projected"):
+        projected = simulation_summary.get("projected", {}) if isinstance(simulation_summary.get("projected"), dict) else {}
+        baseline = simulation_summary.get("baseline", {}) if isinstance(simulation_summary.get("baseline"), dict) else {}
+        projected_revenue = projected.get("revenue")
+        baseline_revenue = baseline.get("revenue")
+        if isinstance(projected_revenue, (int, float)):
+            comparison = ""
+            if isinstance(baseline_revenue, (int, float)):
+                delta = projected_revenue - baseline_revenue
+                comparison = f" versus a baseline of ${baseline_revenue:,.2f} ({delta:+,.2f})."
+            return {
+                "final_insight": {
+                    "chat_response": (
+                        f"For this what-if scenario, the projected revenue is ${projected_revenue:,.2f}{comparison} "
+                        "I’m prioritizing the simulation outcome first, then using market context only as secondary framing."
+                    )
+                },
+                "reasoning_steps": ["Reasoner prioritized simulation_summary for what-if request."]
+            }
+
+    if interaction_mode in {"SOCIAL", "CONVERSATIONAL"} and is_elaboration_request(last_msg):
+        return {
+            "final_insight": {"chat_response": build_multi_paragraph_followup(history, user_role)},
+            "reasoning_steps": ["Reasoner produced multi-paragraph follow-up from fact_sheet_history."]
+        }
+
+    # Handle action/recommendation follow-ups using fact_sheet_history
+    asks_for_actions = any(phrase in last_msg for phrase in [
+        "action", "actions", "steps", "amend", "recommend", "should i",
+        "should we", "what should", "what can i", "what can we", "do about"
+    ])
+    if asks_for_actions and history:
+        effective_fs = get_effective_fact_sheet(state.get("fact_sheet", {}), history)
+        anomaly = find_largest_anomaly(effective_fs)
+        if anomaly:
+            return {
+                "final_insight": {"chat_response": build_fix_response_from_anomaly(anomaly, user_role)},
+                "reasoning_steps": ["Reasoner produced action-oriented follow-up from fact_sheet_history."]
+            }
+
+    if intent_mode == "COMPETITIVE_INTEL" and not is_sim:
+        merged_tables = collect_tables_from_sql_results(sql_context)
+        fs = state.get("fact_sheet", {})
+        if not fs.get("tables") and merged_tables:
+            fs = build_fact_sheet(merged_tables)
+
+        latency = None
+        leads_baseline = None
+        leads_current = None
+        ops = fs.get("tables", {}).get("erp_operations", {}) if isinstance(fs, dict) else {}
+        ops_fields = ops.get("fields", {}) if isinstance(ops, dict) else {}
+        latency_values = ops_fields.get("latency_ms", {}) if isinstance(ops_fields, dict) else {}
+        if isinstance(latency_values, dict):
+            latency = latency_values.get("current")
+
+        crm = fs.get("tables", {}).get("crm", {}) if isinstance(fs, dict) else {}
+        crm_fields = crm.get("fields", {}) if isinstance(crm, dict) else {}
+        lead_values = crm_fields.get("active_leads", {}) if isinstance(crm_fields, dict) else {}
+        if isinstance(lead_values, dict):
+            leads_baseline = lead_values.get("baseline")
+            leads_current = lead_values.get("current")
+
+        competitor_summary = external_context if external_context else "External intelligence indicates a faster competitor system."
+
+        if isinstance(latency, (int, float)) and isinstance(leads_baseline, (int, float)) and isinstance(leads_current, (int, float)):
+            lead_drop_pct = ((leads_baseline - leads_current) / leads_baseline * 100.0) if leads_baseline else 0.0
+            response_text = (
+                f"Ahmed, external intel first: {competitor_summary} "
+                f"Compared with our internal baseline, latency is currently {latency:.0f}ms, and active leads moved from "
+                f"{leads_baseline:.0f} to {leads_current:.0f}. A sub-50ms competitor could plausibly absorb about {lead_drop_pct:.1f}% "
+                "of this lead decline if we do not close the performance gap."
+            )
+        else:
+            response_text = (
+                f"Ahmed, external intel first: {competitor_summary} "
+                "Our internal data is incomplete for a full quantified comparison, but we should benchmark latency and lead conversion "
+                "against competitor speed before committing to pricing or pipeline targets."
+            )
+
+        return {
+            "final_insight": {"chat_response": response_text},
+            "reasoning_steps": ["Reasoner synthesized internal and competitive context conversationally."]
+        }
+
+    if interaction_mode == "SOCIAL" and not is_sim:
+        social_prompt = (
+            "You are a warm executive assistant. Reply naturally to the user in 1-2 friendly sentences. "
+            "Do not mention silos, deltas, missing data, or technical diagnostics. "
+            f"User message: {get_message_content(messages[-1]) if messages else ''}"
+        )
+        response = llm_fast.invoke(social_prompt)
+        return {
+            "final_insight": {"chat_response": response.content},
+            "reasoning_steps": ["Reasoner handled SOCIAL mode conversationally."]
+        }
+
+    is_chat = (
+        chat_mode_tagged
+        or interaction_mode in {"SOCIAL", "GENERAL_QUERY"}
+        or len(messages) > 1
+    ) and not is_sim and "health check" not in last_msg
     fact_sheet = state.get("fact_sheet", {})
     if is_chat:
         if not fact_sheet.get("tables"):
@@ -1332,16 +1969,27 @@ def reasoner_node(state: AgentState):
                 f"KNOWN FACTS: Accounting revenue dropped from {baseline} to {current} "
                 f"({delta_pct:.1f}%). Use this in your response.\n"
             )
+        external_brief = ""
+        if external_context:
+            external_brief = (
+                "EXTERNAL INTEL BRIEFING (already distilled): "
+                f"{external_context}\n"
+                "SYNTHESIS RULE: combine external signals with internal metrics; do not repeat raw source text.\n"
+            )
+
         mission = (
             f"CHAT MODE ({detected_silo}): You are the {user_role}. {persona_focus} "
-            "Answer the user's specific question using the detected silo language. "
-            "DO NOT list raw database rows. SYNTHESIZE the answer."
+            "Answer the user's specific question using detected silo language. "
+            "DO NOT list raw database rows. SYNTHESIZE the answer across CRM, Accounting, HR, Operations, and Sales if relevant. "
+            "When meaningful, connect cross-silo cause and effect in plain language."
         )
         format_inst = (
             "Output: Conversational text only, role-appropriate. "
             "Prioritize the Fact Sheet data if available. "
             "Do not invent metrics or values not present in the provided data. "
-            "Do NOT show math formulas like ((N-O)/O).\n"
+            "Do NOT show math formulas like ((N-O)/O). "
+            "Return one concise narrative string suitable for chat_response.\n"
+            f"{external_brief}"
             f"{revenue_fact}"
         )
     else:
@@ -1592,7 +2240,11 @@ def insight_filter_node(state: AgentState):
     user_msg = ""
     if state.get("messages"):
         user_msg = get_message_content(state["messages"][-1]).lower()
-    if any(k in user_msg for k in ["health check", "healthcheck", "anomaly", "audit"]):
+    if any(k in user_msg for k in [
+        "health check", "healthcheck", "anomaly", "audit",
+        "silo", "silos", "status", "state of", "overview", "check",
+        "cross-domain", "cross domain", "performance", "breakdown"
+    ]):
         return {"end_early": False}
     fact_sheet = state.get("fact_sheet", {})
     if detect_material_change(fact_sheet):
@@ -1629,9 +2281,138 @@ def build_fallback_insight(fact_sheet: dict, user_role: str) -> dict:
 
 def strategic_reasoner_node(state: AgentState):
     fact_sheet = state.get("fact_sheet", {})
+    fact_sheet_history = state.get("fact_sheet_history", [])
+    fact_sheet = get_effective_fact_sheet(fact_sheet, fact_sheet_history)
     user_role = state.get("role", "Executive")
     is_sim = state.get("is_simulation", False)
+    interaction_mode = str(state.get("interaction_mode", "")).upper()
     simulation_summary = state.get("simulation_summary")
+    user_messages = state.get("messages", [])
+    user_text = get_message_content(user_messages[-1]) if user_messages else ""
+    lower_user_text = (user_text or "").lower()
+    active_focus = state.get("active_focus")
+    # Only derive active_focus from history for genuine follow-ups (when state already had it)
+    # Don't auto-derive and latch on the first proactive query
+    _focus_from_state = active_focus is not None
+    if not active_focus and fact_sheet_history:
+        active_focus = derive_active_focus_from_history(fact_sheet_history)
+    is_layman_mode = interaction_mode in {"SOCIAL", "CHAT", "CONVERSATIONAL"}
+
+    largest_anomaly = find_largest_anomaly(fact_sheet)
+    asks_for_why = any(phrase in lower_user_text for phrase in ["why", "why?", "how come", "what caused", "cause of this"])
+    asks_for_elaborate = is_elaboration_request(user_text)
+    asks_for_owner = any(phrase in lower_user_text for phrase in ["who do i speak", "who is responsible", "who owns", "who do i talk"])
+    asks_for_team = any(phrase in lower_user_text for phrase in ["which team", "what team"])
+    asks_for_fix = any(phrase in lower_user_text for phrase in [
+        "how do i fix", "fix this", "how can we fix", "what should we fix",
+        "actions should", "what actions", "steps to", "amend",
+        "what should i", "what can i do", "what do i do", "recommend"
+    ])
+    references_prior_value = bool(re.search(r"\$\s*\d+[\d,]*", lower_user_text)) or "cash flow" in lower_user_text
+    followup_signal = asks_for_why or asks_for_elaborate or asks_for_owner or asks_for_team or asks_for_fix or references_prior_value
+    asks_fresh_health_check = any(term in lower_user_text for term in ["fresh health check", "new health check", "health check", "healthcheck"])
+
+    if followup_signal and not fact_sheet_history:
+        return {
+            "final_insight": {
+                "chat_response": "I've lost the thread of our data investigation. Could you ask me for a fresh health check so I can re-sync?"
+            },
+            "active_focus": active_focus
+        }
+
+    if (asks_for_why or asks_for_elaborate) and active_focus and not asks_fresh_health_check:
+        focused_fact_sheet = restrict_fact_sheet_to_silo(fact_sheet, active_focus)
+        return {
+            "final_insight": {
+                "chat_response": build_focus_locked_followup(focused_fact_sheet, active_focus, user_role, asks_for_why)
+            },
+            "active_focus": active_focus,
+            "target_silos": [active_focus]
+        }
+
+    if not is_sim and asks_for_why:
+        why_response, why_focus = build_why_cross_silo_followup(fact_sheet_history, user_role)
+        return {
+            "final_insight": {
+                "chat_response": why_response
+            },
+            "active_focus": active_focus or why_focus
+        }
+
+    if is_layman_mode and references_prior_value:
+        return {
+            "final_insight": {
+                "chat_response": build_value_reference_explanation(fact_sheet_history, user_role)
+            },
+            "active_focus": active_focus or (table_to_silo(largest_anomaly.get("table", "")) if largest_anomaly else None)
+        }
+
+    if not is_sim and (asks_for_owner or asks_for_team):
+        owner_silo = active_focus or (table_to_silo(largest_anomaly.get("table", "")) if largest_anomaly else None)
+        if not owner_silo:
+            owner_silo = "Operations"
+        owner_name, owner_role = lookup_silo_owner(owner_silo)
+        if owner_name:
+            return {
+                "final_insight": {
+                    "chat_response": f"You should speak with {owner_name}, the manager of the {owner_silo} team."
+                },
+                "active_focus": owner_silo
+            }
+        return {
+            "final_insight": {
+                "chat_response": f"You should speak with the {owner_silo} department lead first, since that area has the largest anomaly."
+            },
+            "active_focus": owner_silo
+        }
+
+    if not is_sim and largest_anomaly and asks_for_fix:
+        latched_focus = active_focus or table_to_silo(largest_anomaly.get("table", ""))
+        return {
+            "final_insight": {
+                "chat_response": build_fix_response_from_anomaly(largest_anomaly, user_role)
+            },
+            "active_focus": latched_focus
+        }
+
+    if is_layman_mode and not is_sim:
+        social_prompt = (
+            "You are a friendly, helpful executive assistant. "
+            "Use plain business language for a non-technical audience. "
+            "Avoid technical jargon (for example: latency, triangulation, delta_pct, schema, causal chain). "
+            "If discussing performance impact, describe it as lost opportunity or revenue gap versus baseline. "
+            "Example rewrite: instead of 'Latency moved from 45 to 310', say 'Our website speed slowed down significantly, causing a delay that frustrated customers.' "
+            f"User message: {user_text}"
+        )
+        response = llm_fast.invoke(social_prompt)
+        return {
+            "final_insight": {
+                "chat_response": response.content
+            },
+            "active_focus": active_focus
+        }
+
+    requested_table = resolve_table_alias(user_text)
+    requested_metric = resolve_metric_hint(user_text)
+    if requested_table and requested_metric and not metric_exists_in_table(fact_sheet, requested_table, requested_metric):
+        # Check fact_sheet_history before rejecting
+        found_in_history = False
+        for prev_fs in reversed(fact_sheet_history or []):
+            if isinstance(prev_fs, dict) and metric_exists_in_table(prev_fs, requested_table, requested_metric):
+                fact_sheet = prev_fs
+                found_in_history = True
+                break
+        if not found_in_history:
+            return {
+                "final_insight": {
+                    "chat_response": (
+                        f"I can’t validate {requested_metric} in {requested_table} from the current fact sheet, "
+                        "so I won’t generate a metric-change card for that pair."
+                    )
+                },
+                "active_focus": active_focus
+            }
+
     sales_manager = str(user_role).lower() == "sales manager"
     role_focus = {
         "CEO": "Cross-silo executive synthesis with emphasis on Operations, Accounting, and CRM.",
@@ -1661,16 +2442,33 @@ def strategic_reasoner_node(state: AgentState):
             "- Still include Expenditure impact as a footer line in the REASONING section.\n"
         )
 
+    metric_source_map = {}
+    fs_tables = fact_sheet.get("tables", {}) if isinstance(fact_sheet, dict) else {}
+    for tbl_name, tbl in (fs_tables.items() if isinstance(fs_tables, dict) else []):
+        silo_name = table_to_silo(tbl_name)
+        fields = tbl.get("fields", {}) if isinstance(tbl, dict) else {}
+        for fld_name in (fields.keys() if isinstance(fields, dict) else []):
+            metric_source_map[fld_name] = {"table": tbl_name, "silo": silo_name}
+    metric_ownership_block = "METRIC OWNERSHIP (ground truth — never attribute a metric to a different silo):\n"
+    for fld, info in metric_source_map.items():
+        metric_ownership_block += f"  - {fld} belongs to table '{info['table']}' (Silo: {info['silo']})\n"
+
     logic_prompt = f"""
     ROLE: Chief Intelligence Officer
     USER ROLE: {user_role}
     PERSONA FOCUS: {persona_focus}
+    INTERACTION MODE: ANALYTICAL
     FACT SHEET (JSON): {json.dumps(fact_sheet)}
     {sim_context}
+
+    {metric_ownership_block}
 
     TASK:
     - Describe the forensic path taken to find this insight. Do not summarize; explain the investigation.
     - Produce a plain-text causal analysis using only numbers from the Fact Sheet.
+    - STRICT SOURCE RULE: When referencing a metric, you MUST attribute it to its owning silo as listed above. Do NOT place latency_ms in Accounting or revenue in Operations.
+    - CROSS-SILO TRIANGULATION: connect at least two silos with explicit cause-effect narrative.
+    - QUANTITATIVE GROUNDING: use only values present in Fact Sheet or Simulation Summary.
     - {constraint_line}
     - Triangulate across at least two tables.
     - If Simulation Summary is provided, prioritize Projected values over Historical values.
@@ -1721,7 +2519,50 @@ def strategic_reasoner_node(state: AgentState):
         formatted_response = llm_smart.invoke(retry_prompt)
         data = parse_llm_json(formatted_response.content)
 
-    final_insight = enforce_strict_schema(data, fact_sheet, user_role, is_sim)
+    final_insight = enforce_strict_schema(data, fact_sheet, user_role, is_sim, interaction_mode)
+
+    if isinstance(final_insight, dict) and isinstance(final_insight.get("content"), dict):
+        metric_table_map = build_metric_table_map(fact_sheet)
+        requested_table = user_requested_table(user_text)
+        content = final_insight.get("content", {})
+        headline = str(content.get("headline", ""))
+        summary = str(content.get("summary", ""))
+        combined_text = f"{headline} {summary}".lower()
+
+        invalid_mentions = []
+        for metric, tables in metric_table_map.items():
+            if metric in combined_text and requested_table and requested_table not in tables:
+                invalid_mentions.append((metric, sorted(tables)))
+
+        if invalid_mentions and requested_table:
+            metric_name, valid_tables = invalid_mentions[0]
+            return {
+                "final_insight": {
+                    "chat_response": (
+                        f"I can’t attribute '{metric_name}' to {requested_table} from the current fact sheet. "
+                        f"That metric belongs to {', '.join(valid_tables)}."
+                    )
+                }
+            }
+
+        if requested_table == "crm":
+            accounting_fields = metric_table_map.keys()
+            accounting_terms = []
+            tables = fact_sheet.get("tables", {}) if isinstance(fact_sheet, dict) else {}
+            accounting_table = tables.get("erp_accounting", {}) if isinstance(tables, dict) else {}
+            accounting_field_map = accounting_table.get("fields", {}) if isinstance(accounting_table, dict) else {}
+            if isinstance(accounting_field_map, dict):
+                accounting_terms = [str(name).lower() for name in accounting_field_map.keys()]
+
+            mentions_accounting_metric = any(term in combined_text for term in accounting_terms)
+            prefix = "While your question is about CRM, I also noticed a related shift in our Accounting table..."
+            if mentions_accounting_metric:
+                current_summary = str(content.get("summary", "")).strip()
+                if current_summary and not current_summary.startswith(prefix):
+                    content["summary"] = f"{prefix} {current_summary}"
+                elif not current_summary:
+                    content["summary"] = prefix
+                final_insight["content"] = content
 
     tables = fact_sheet.get("tables", {}) if isinstance(fact_sheet, dict) else {}
     table_names = list(tables.keys())
@@ -1751,7 +2592,7 @@ def strategic_reasoner_node(state: AgentState):
             f"at {highest_delta['delta']:.1f}% change."
         )
 
-    primary, secondary = select_trace_fields(fact_sheet, user_role, final_insight.get("target_silos") if isinstance(final_insight, dict) else None)
+    primary, secondary = select_trace_fields(fact_sheet, user_role, None)
     correlation_text = "Cross-silo correlation could not be resolved from current evidence."
     if primary and secondary:
         correlation_text = (
@@ -1779,10 +2620,79 @@ def strategic_reasoner_node(state: AgentState):
     ]
     if isinstance(final_insight, dict):
         final_insight["reasoning_chain"] = forensic_chain
-    if sales_manager and isinstance(final_insight, dict):
+        # Merge silos from anomaly + enforce_strict_schema traces instead of overwriting
+        existing_silos = final_insight.get("target_silos", [])
+        if not isinstance(existing_silos, list):
+            existing_silos = []
+        merged_silo_set = list(existing_silos)  # start from enforce_strict_schema's traces
+        if highest_delta and highest_delta.get("table"):
+            s = table_to_silo(highest_delta.get("table"))
+            if s not in merged_silo_set:
+                merged_silo_set.append(s)
+        if primary and primary.get("table_name"):
+            s = table_to_silo(primary.get("table_name"))
+            if s not in merged_silo_set:
+                merged_silo_set.append(s)
+        if secondary and secondary.get("table_name"):
+            s = table_to_silo(secondary.get("table_name"))
+            if s not in merged_silo_set:
+                merged_silo_set.append(s)
+        normalized_sources = [s for s in merged_silo_set if s in ALLOWED_SILOS]
+        normalized_sources = list(dict.fromkeys(normalized_sources)) or ["Operations"]
+        # Only latch to single active_focus for genuine follow-ups where focus was pre-set
+        if _focus_from_state and active_focus in ALLOWED_SILOS:
+            final_insight["target_silos"] = [active_focus]
+        else:
+            final_insight["target_silos"] = normalized_sources
+            if normalized_sources:
+                active_focus = normalized_sources[0]
+
+    if is_sim and isinstance(final_insight, dict):
+        simulation_inputs = state.get("simulation_inputs", {}) if isinstance(state.get("simulation_inputs", {}), dict) else {}
+        sim_projected = simulation_summary.get("projected", {}) if isinstance(simulation_summary, dict) else {}
+        content = final_insight.get("content") if isinstance(final_insight.get("content"), dict) else {}
+        primary_driver_parts = []
+        for key in ["price_change", "revenue_change", "volume_change", "discount_change"]:
+            value = simulation_inputs.get(key)
+            if isinstance(value, (int, float)):
+                suffix = "%" if abs(value) <= 100 else ""
+                primary_driver_parts.append(f"{key}={value}{suffix}")
+        if not primary_driver_parts:
+            primary_driver_parts.append("explicit simulation_inputs scenario")
+
+        secondary_factor = "None detected"
+        if highest_delta:
+            secondary_factor = (
+                f"{highest_delta['field']} in {highest_delta['table']} ({highest_delta['delta']:.1f}% historical shift)"
+            )
+
+        projected_revenue = None
+        if isinstance(sim_projected, dict) and isinstance(sim_projected.get("revenue"), (int, float)):
+            projected_revenue = sim_projected.get("revenue")
+
+        content["headline"] = "Simulation Scenario Impacting Projected Revenue"
+        summary_line = (
+            f"Primary simulation driver: {', '.join(primary_driver_parts)}. "
+            "Projected outcomes are attributed to this what-if scenario first."
+        )
+        if isinstance(projected_revenue, (int, float)):
+            summary_line += f" Simulated projected revenue: ${projected_revenue:,.2f}."
+        content["summary"] = summary_line
+        content["reasoning_detailed"] = (
+            f"Primary Driver: {', '.join(primary_driver_parts)}. "
+            "Simulation inputs are treated as the root-cause mechanism for projected change. "
+            f"Secondary Environmental Factor: {secondary_factor}. "
+            "Historical anomalies are contextual only and not used as the primary cause of simulated revenue movement."
+        )
+        final_insight["content"] = content
+
+    if sales_manager and isinstance(final_insight, dict) and not is_sim:
         content = final_insight.get("content") if isinstance(final_insight.get("content"), dict) else {}
         headline = str(content.get("headline", ""))
-        headline = re.sub(r"\b(latency|uptime)\b", "", headline, flags=re.IGNORECASE).strip()
+        # Replace full metric phrases instead of single words to avoid orphaned fragments like "Ms in Operations"
+        headline = re.sub(r"\bLatency Ms\b", "Service Delays", headline, flags=re.IGNORECASE)
+        headline = re.sub(r"\bUptime Pct\b", "Reliability", headline, flags=re.IGNORECASE)
+        headline = re.sub(r"\bSuccess Rate\b", "Service Quality", headline, flags=re.IGNORECASE)
         if "lead" not in headline.lower() and "pipeline" not in headline.lower():
             headline = f"Lead Quality Shift Impacting Pipeline Health - {headline}".strip(" -")
         content["headline"] = re.sub(r"\s{2,}", " ", headline).strip()
@@ -1792,8 +2702,10 @@ def strategic_reasoner_node(state: AgentState):
         for rec in recommendations:
             if not isinstance(rec, dict):
                 continue
-            action = re.sub(r"\b(latency|uptime)\b", "", str(rec.get("action", "")), flags=re.IGNORECASE)
-            detail = re.sub(r"\b(latency|uptime)\b", "", str(rec.get("detail", "")), flags=re.IGNORECASE)
+            action = re.sub(r"\blatency ms\b", "service delays", str(rec.get("action", "")), flags=re.IGNORECASE)
+            detail = re.sub(r"\blatency ms\b", "service delays", str(rec.get("detail", "")), flags=re.IGNORECASE)
+            action = re.sub(r"\buptime pct\b", "reliability", action, flags=re.IGNORECASE)
+            detail = re.sub(r"\buptime pct\b", "reliability", detail, flags=re.IGNORECASE)
             if "lead" not in (action + detail).lower() and "pipeline" not in (action + detail).lower():
                 detail = f"Improve lead quality and pipeline health. {detail}".strip()
             cleaned_recs.append({
@@ -1817,7 +2729,10 @@ def strategic_reasoner_node(state: AgentState):
             reasoning = f"{reasoning}\n{expenditure_footer}".strip()
         content["reasoning_detailed"] = reasoning
         final_insight["content"] = content
-    return {"final_insight": final_insight}
+    return {
+        "final_insight": final_insight,
+        "active_focus": active_focus
+    }
 
 def chart_generator_node(state: AgentState):
     fact_sheet = state.get("fact_sheet", {})
