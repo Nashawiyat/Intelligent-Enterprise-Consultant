@@ -30,17 +30,30 @@ async def query_langgraph(messages, role, current_silo:str, is_simulation=False,
         "role": role,
         "is_simulation": is_simulation,
         "simulation_inputs": simulation_inputs,
-        "current_silo": current_silo
+        "current_silo": current_silo,
+        "sql_results": {},
+        "fact_sheet_history": []
     }
 
     try:
         final_state = await enterprise_agent.ainvoke(inputs)
         insight = final_state.get("final_insight")
 
-        if not insight:
-            raise HTTPException(status_code=500, detail="LangGraph was unable to get a response")
+        if insight is None or (isinstance(insight, dict) and len(insight) == 0):
+            return {
+                "status": "no_insight",
+                "message": "No insight generated for this request.",
+                "end_early": bool(final_state.get("end_early", False)),
+                "needs_more_data": bool(final_state.get("needs_more_data", False)),
+                "audit_summary": final_state.get("audit_summary")
+            }
+
+        if not isinstance(insight, dict):
+            raise HTTPException(status_code=500, detail="LangGraph returned invalid final_insight format")
         
         return insight
+    except HTTPException as e:
+        raise e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
