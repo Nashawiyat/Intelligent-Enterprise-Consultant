@@ -73,8 +73,7 @@ div[data-testid="stAppViewContainer"] > section > div {{
 
 /* Panel borders */
 [data-testid="stVerticalBlock"].st-key-admin_users_panel,
-[data-testid="stVerticalBlock"].st-key-admin_create_panel,
-[data-testid="stVerticalBlock"].st-key-admin_contract_panel {{
+[data-testid="stVerticalBlock"].st-key-admin_create_panel {{
     border: 3px solid {BORDER_STRONG} !important;
     border-radius: 16px !important;
     background: {CARD} !important;
@@ -191,6 +190,10 @@ button[data-testid="stBaseButton-primary"]:hover {{
     color: #e53935 !important;
     font-size: 0.8rem;
     font-weight: 600;
+}}
+/* Hide 'Press Enter to submit form' helper text */
+div[data-testid="InputInstructions"] {{
+    display: none !important;
 }}
 </style>
 """, unsafe_allow_html=True)
@@ -650,23 +653,3 @@ with col_form:
                     else:
                         st.error(msg)
 
-    # ── API Contract Status panel ──
-    with st.container(border=True, key="admin_contract_panel"):
-        st.markdown(
-            '<div class="admin-panel-header">📋 API Contract Status</div>',
-            unsafe_allow_html=True,
-        )
-        st.markdown(f"""
-        <div style="font-size:0.8rem;color:{TEXT2};line-height:1.6;">
-            <b>Backend endpoints needed:</b><br>
-            ⬜ <code>POST /auth/login</code> — Authentication<br>
-            ⬜ <code>GET /admin/users</code> — List / Search users<br>
-            ⬜ <code>POST /admin/users</code> — Create user<br>
-            ⬜ <code>DELETE /admin/users/{'{'}username{'}'}</code> — Delete user<br>
-            ⬜ <code>PATCH /admin/users/batch</code> — Batch update + delete<br>
-            ⬜ <code>POST /chat</code> — Chat with attachment<br>
-            ⬜ <code>POST /integrations/slack/connect</code> — Slack<br>
-            <br>
-            <em>See <code>API_CONTRACT.md</code> for full specifications.</em>
-        </div>
-        """, unsafe_allow_html=True)

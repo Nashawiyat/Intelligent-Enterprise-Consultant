@@ -125,6 +125,39 @@ def get_current_user() -> dict | None:
 
 
 # ──────────────────────────────────────────────
+# Department → Backend domain mapping
+# ──────────────────────────────────────────────
+_DEPT_TO_DOMAIN = {
+    "sales":        "Sales",
+    "operations":   "Operations",
+    "hr":           "HR",
+    "finance":      "Accounting",
+    "engineering":  "Operations",
+    "it":           "Operations",
+    "executive":    "Sales",
+    "marketing":    "CRM",
+    "legal":        "Accounting",
+}
+
+
+def get_user_domain() -> str:
+    """Return the backend domain for the current user based on their department."""
+    user = get_current_user()
+    if not user:
+        return "Sales"
+    dept = (user.get("department") or "").lower()
+    return _DEPT_TO_DOMAIN.get(dept, "Sales")
+
+
+def get_user_role_context() -> str:
+    """Return the role_context (job title) for the current user."""
+    user = get_current_user()
+    if not user:
+        return "Analyst"
+    return user.get("title") or user.get("role") or "Analyst"
+
+
+# ──────────────────────────────────────────────
 # Login / Logout (mocked)
 # ──────────────────────────────────────────────
 def mock_login(username: str, password: str) -> bool:
@@ -205,11 +238,28 @@ def _sync_user_to_local_db(user: dict):
 
 
 def logout():
-    """Clear auth state."""
+    """Clear auth state and all page-specific session data."""
+    # Auth state
     st.session_state.authenticated = False
     st.session_state.current_user = None
     st.session_state.auth_token = None
     st.session_state.login_error = None
+
+    # Home page state (chat, insights, etc.)
+    _page_keys = [
+        "active_insights", "seen_insight_ids", "chat_history",
+        "selected_role", "selected_domain",
+        "last_insight_fetch", "insight_error", "insight_consecutive_errors",
+        "chat_file_key",
+        "slack_connected", "slack_config",
+        "insight_count", "upload_count", "chat_count",
+        # Simulation page state
+        "sim_domain", "sim_role", "sim_result", "sim_error",
+        "sim_loading", "sim_prompt", "sim_initialized",
+    ]
+    for key in _page_keys:
+        if key in st.session_state:
+            del st.session_state[key]
 
 
 # ──────────────────────────────────────────────

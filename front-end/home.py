@@ -20,6 +20,8 @@ from auth_utils import (
     mock_upload_context,
     init_slack_state,
     mock_connect_slack,
+    get_user_domain,
+    get_user_role_context,
 )
 
 # ──────────────────────────────────────────────
@@ -31,10 +33,6 @@ except Exception:
     BACKEND_BASE_URL = "http://localhost:8000"
 INSIGHTS_ENDPOINT = f"{BACKEND_BASE_URL}/insights"
 PROMPT_ENDPOINT = f"{BACKEND_BASE_URL}/prompt"
-
-# Domains and roles available (aligned with backend ALLOWED_SILOS)
-DOMAINS = ["Sales", "Operations", "HR", "Accounting", "CRM"]
-ROLES = ["CEO", "CFO", "COO", "CTO", "CMO", "CHRO", "VP Sales", "VP Engineering", "Analyst"]
 
 # ──────────────────────────────────────────────
 # Theme colours (for Python-level usage: Plotly charts, inline HTML)
@@ -412,6 +410,10 @@ button[data-testid="stBaseButton-primaryFormSubmit"]:hover {{
     margin-left: 0.3rem;
     vertical-align: middle;
 }}
+/* Hide 'Press Enter to submit form' helper text */
+div[data-testid="InputInstructions"] {{
+    display: none !important;
+}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -425,12 +427,9 @@ if "seen_insight_ids" not in st.session_state:
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "selected_role" not in st.session_state:
-    # Default role from logged-in user's title if available
-    user = get_current_user()
-    default_role = user.get("title", "CEO") if user else "CEO"
-    st.session_state.selected_role = default_role if default_role in ROLES else "CEO"
+    st.session_state.selected_role = get_user_role_context()
 if "selected_domain" not in st.session_state:
-    st.session_state.selected_domain = "Sales"
+    st.session_state.selected_domain = get_user_domain()
 if "last_insight_fetch" not in st.session_state:
     st.session_state.last_insight_fetch = 0.0
 if "insight_error" not in st.session_state:
@@ -440,7 +439,7 @@ if "insight_consecutive_errors" not in st.session_state:
 if "chat_file_key" not in st.session_state:
     st.session_state.chat_file_key = 0
 
-INSIGHT_REFRESH_INTERVAL = 10  # seconds
+INSIGHT_REFRESH_INTERVAL = 120  # seconds (avoid burning LLM tokens)
 MAX_BACKOFF_MULTIPLIER = 30   # max 5 min between retries on repeated errors
 
 # Auto-refresh the page to poll for new insights
@@ -474,8 +473,8 @@ def fetch_insights(domain: str, role: str) -> list[dict]:
                 detail = err_data.get("detail", resp.text)
             except Exception:
                 detail = resp.text or f"HTTP {resp.status_code}"
-            # Detect rate-limit hints from Groq (backend wraps 429 as 500)
-            if "rate_limit" in str(detail).lower() or "429" in str(detail):
+            # Detect rate-limit hints (backend now returns 429 directly)
+            if resp.status_code == 429 or "rate_limit" in str(detail).lower() or "429" in str(detail):
                 st.session_state.insight_error = (
                     "⏳ Backend AI rate limit reached. Auto-retry will slow down. "
                     "Please wait a few minutes."
@@ -488,14 +487,29 @@ def fetch_insights(domain: str, role: str) -> list[dict]:
         data = resp.json()
         # Successful fetch — reset error backoff
         st.session_state.insight_consecutive_errors = 0
-        # Backend may return a single insight dict or a list
-        if isinstance(data, dict):
-            # If backend returns a "no_insight" status, don't treat as real insight
+
+        # Backend returns list of {timestamp, insight} dicts (new format)
+        if isinstance(data, list):
+            unwrapped = []
+            for item in data:
+                if isinstance(item, dict) and "insight" in item:
+                    inner = item["insight"]
+                    if isinstance(inner, dict):
+                        inner["_created_at"] = item.get("timestamp", "")
+                        # Skip "no_insight" status entries
+                        if inner.get("status") == "no_insight":
+                            continue
+                        unwrapped.append(inner)
+                elif isinstance(item, dict):
+                    if item.get("status") == "no_insight":
+                        continue
+                    unwrapped.append(item)
+            return unwrapped
+        elif isinstance(data, dict):
+            # Single insight or no_insight status
             if data.get("status") == "no_insight":
                 return []
             return [data]
-        elif isinstance(data, list):
-            return data
         return []
     except requests.exceptions.ConnectionError:
         st.session_state.insight_error = "Backend not reachable. Start the backend server."
@@ -573,10 +587,23 @@ def send_chat_message(
             content = data.get("content", {})
             if isinstance(content, dict) and content.get("summary"):
                 return content["summary"]
+            # If there's a message field (e.g. no_insight), use that
+            if data.get("message"):
+                return data["message"]
             return json.dumps(data, indent=2)
         return str(data)
     except requests.exceptions.ConnectionError:
         return "Backend not reachable. Please start the backend server."
+    except requests.exceptions.HTTPError as e:
+        # Handle specific HTTP error codes gracefully
+        status = e.response.status_code if e.response is not None else 0
+        if status == 429:
+            return "⏳ AI rate limit reached. Please wait a minute and try again."
+        try:
+            detail = e.response.json().get("detail", str(e))
+        except Exception:
+            detail = str(e)
+        return f"Error ({status}): {detail}"
     except Exception as e:
         return f"Error: {e}"
 
@@ -624,34 +651,28 @@ def render_plotly(visuals: dict, key: str):
 
 
 # ──────────────────────────────────────────────
-# TOP BAR – ICA + Role/Domain selectors + Light/Dark toggle
+# TOP BAR – ICA + user info + Light/Dark toggle
+# (Domain & role are fixed per user profile)
 # ──────────────────────────────────────────────
 current_user = get_current_user()
 user_greeting = ""
 if current_user:
     user_greeting = f"  ·  Welcome, {current_user.get('display_name', current_user['username'])}"
 
-top_brand, top_domain, top_role, top_toggle = st.columns([3, 2, 2, 2])
+# Fixed domain/role from user profile
+st.session_state.selected_domain = get_user_domain()
+st.session_state.selected_role = get_user_role_context()
+
+top_brand, _, top_toggle = st.columns([6, 3, 2])
 with top_brand:
-    st.markdown(f'<div class="topbar-brand">🔬 Intelligent Consultant Agent<span style="font-size:0.72rem;color:{TEXT2};font-weight:400;">{user_greeting}</span></div>', unsafe_allow_html=True)
-with top_domain:
-    domain_idx = DOMAINS.index(st.session_state.selected_domain) if st.session_state.selected_domain in DOMAINS else 0
-    new_domain = st.selectbox("Domain", DOMAINS, index=domain_idx, key="domain_select", label_visibility="collapsed")
-    if new_domain != st.session_state.selected_domain:
-        st.session_state.selected_domain = new_domain
-        st.session_state.active_insights = []
-        st.session_state.seen_insight_ids = set()
-        st.session_state.last_insight_fetch = 0.0
-        st.rerun()
-with top_role:
-    role_idx = ROLES.index(st.session_state.selected_role) if st.session_state.selected_role in ROLES else 0
-    new_role = st.selectbox("Role", ROLES, index=role_idx, key="role_select", label_visibility="collapsed")
-    if new_role != st.session_state.selected_role:
-        st.session_state.selected_role = new_role
-        st.session_state.active_insights = []
-        st.session_state.seen_insight_ids = set()
-        st.session_state.last_insight_fetch = 0.0
-        st.rerun()
+    dept_label = current_user.get("department", "") if current_user else ""
+    role_label = st.session_state.selected_role
+    st.markdown(
+        f'<div class="topbar-brand">🔬 Intelligent Consultant Agent'
+        f'<span style="font-size:0.95rem;color:{TEXT2};font-weight:400;opacity:0.85;margin-left:0.4rem;">{user_greeting}'
+        f' · {dept_label} · {role_label}</span></div>',
+        unsafe_allow_html=True,
+    )
 with top_toggle:
     toggled = st.toggle("Dark Mode", value=st.session_state.dark_mode, key="theme_toggle")
     if toggled != st.session_state.dark_mode:
@@ -719,17 +740,32 @@ with main_col:
                                 urg_lbl = "High" if urgency >= 0.8 else ("Med" if urgency >= 0.5 else "Low")
                                 conf = int(meta.get("confidence_score", 0) * 100)
 
-                                gen_time = meta.get("generated_at", "")
+                                gen_time = insight.get("_created_at", "") or meta.get("generated_at", "")
                                 domain_tag = meta.get("domain", st.session_state.selected_domain)
+
+                                # Format timestamp for display
+                                time_display = ""
+                                if gen_time:
+                                    try:
+                                        from datetime import datetime
+                                        if "T" in str(gen_time):
+                                            dt = datetime.fromisoformat(str(gen_time).replace("Z", "+00:00"))
+                                        else:
+                                            dt = datetime.strptime(str(gen_time)[:19], "%Y-%m-%d %H:%M:%S")
+                                        time_display = dt.strftime("%b %d, %I:%M %p")
+                                    except Exception:
+                                        time_display = str(gen_time)[:16]
 
                                 # Top row: meta tags + dismiss button (top-right)
                                 meta_col, dismiss_col = st.columns([5, 1])
                                 with meta_col:
+                                    time_html = f'<span class="meta-tag">🕐 {time_display}</span>' if time_display else ""
                                     st.markdown(f"""
                                     <div style="margin-bottom:0.3rem;">
                                         <span class="meta-tag {urg_cls}">{urg_lbl}</span>
                                         <span class="meta-tag">🎯 {conf}%</span>
                                         <span class="meta-tag">{domain_tag}</span>
+                                        {time_html}
                                     </div>
                                     """, unsafe_allow_html=True)
                                 with dismiss_col:
@@ -760,49 +796,48 @@ with main_col:
                                         for step in chain:
                                             st.markdown(f"**{step['step']}.** *{step['agent']}* – {step['thought']}")
 
-    # ── Slack Integration & Session Stats (below insights) ──
+    # ── Session Stats (below insights) ──
     with st.container(border=True, key="slack_panel"):
-        slack_col, stats_col = st.columns([3, 1.5], gap="medium")
+        stats_col_full = st.columns([1])[0]
 
-        # — Slack Integration —
-        with slack_col:
-            st.markdown(f'<div class="panel-header">💬 Slack Integration</div>', unsafe_allow_html=True)
-
-            if st.session_state.slack_connected:
-                cfg = st.session_state.slack_config
-                st.success(f"Connected to {cfg['channel']} since {cfg['connected_at']}")
-                if st.button("Disconnect", key="slack_disconnect_btn"):
-                    st.session_state.slack_connected = False
-                    st.session_state.slack_config = None
-                    st.rerun()
-            else:
-                with st.form("slack_form"):
-                    s_c1, s_c2, s_c3 = st.columns(3)
-                    with s_c1:
-                        webhook = st.text_input("Webhook URL", placeholder="https://hooks.slack.com/services/...", key="slack_webhook")
-                    with s_c2:
-                        channel = st.text_input("Channel", value="#insights", key="slack_channel")
-                    with s_c3:
-                        notify = st.selectbox("Notify on", ["high_urgency", "all"], key="slack_notify")
-                    slack_submit = st.form_submit_button("Connect Slack", type="primary")
-
-                    if slack_submit:
-                        if webhook.strip():
-                            mock_connect_slack(webhook.strip(), channel.strip(), notify)
-                            st.toast("Slack connected!", icon="✅")
-                            st.rerun()
-                        else:
-                            st.error("Webhook URL required.")
+        # — Slack Integration — (commented out for now)
+        # with slack_col:
+        #     st.markdown(f'<div class="panel-header">💬 Slack Integration</div>', unsafe_allow_html=True)
+        #
+        #     if st.session_state.slack_connected:
+        #         cfg = st.session_state.slack_config
+        #         st.success(f"Connected to {cfg['channel']} since {cfg['connected_at']}")
+        #         if st.button("Disconnect", key="slack_disconnect_btn"):
+        #             st.session_state.slack_connected = False
+        #             st.session_state.slack_config = None
+        #             st.rerun()
+        #     else:
+        #         with st.form("slack_form"):
+        #             s_c1, s_c2, s_c3 = st.columns(3)
+        #             with s_c1:
+        #                 webhook = st.text_input("Webhook URL", placeholder="https://hooks.slack.com/services/...", key="slack_webhook")
+        #             with s_c2:
+        #                 channel = st.text_input("Channel", value="#insights", key="slack_channel")
+        #             with s_c3:
+        #                 notify = st.selectbox("Notify on", ["high_urgency", "all"], key="slack_notify")
+        #             slack_submit = st.form_submit_button("Connect Slack", type="primary")
+        #
+        #             if slack_submit:
+        #                 if webhook.strip():
+        #                     mock_connect_slack(webhook.strip(), channel.strip(), notify)
+        #                     st.toast("Slack connected!", icon="✅")
+        #                     st.rerun()
+        #                 else:
+        #                     st.error("Webhook URL required.")
 
         # — Quick Stats —
-        with stats_col:
+        with stats_col_full:
             st.markdown(f'<div class="panel-header">📈 Session Stats</div>', unsafe_allow_html=True)
             st.markdown(f"""
             <div style="font-size:0.8rem;line-height:2;color:{TEXT2};">
                 Insights collected: <b style="color:{ACCENT};">{len(st.session_state.active_insights)}</b><br>
                 Files uploaded: <b style="color:{ACCENT};">{len(st.session_state.uploaded_files)}</b><br>
-                Chat messages: <b style="color:{ACCENT};">{len(st.session_state.chat_history)}</b><br>
-                Slack: <b style="color:{ACCENT};">{"Connected" if st.session_state.slack_connected else "Not connected"}</b>
+                Chat messages: <b style="color:{ACCENT};">{len(st.session_state.chat_history)}</b>
             </div>
             """, unsafe_allow_html=True)
 

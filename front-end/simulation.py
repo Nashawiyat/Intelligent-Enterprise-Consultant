@@ -3,6 +3,7 @@ import plotly.graph_objects as go
 import requests
 import json
 from theme import get_colors
+from auth_utils import get_current_user, get_user_domain, get_user_role_context
 
 # ==============================================================================
 # 1. THEME COLOURS (from shared palette)
@@ -214,6 +215,10 @@ st.markdown(f"""
     .stSubheader {{
         color: {TEXT} !important;
     }}
+    /* Hide 'Press Enter to submit form' helper text */
+    div[data-testid="InputInstructions"] {{
+        display: none !important;
+    }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -225,10 +230,6 @@ try:
 except Exception:
     BACKEND_BASE_URL = "http://localhost:8000"
 SIMULATION_ENDPOINT = f"{BACKEND_BASE_URL}/simulation"
-
-# Domains and roles (aligned with backend ALLOWED_SILOS)
-DOMAINS = ["Sales", "Operations", "HR", "Accounting", "CRM"]
-ROLES = ["CEO", "CFO", "COO", "CTO", "CMO", "CHRO", "VP Sales", "VP Engineering", "Analyst"]
 
 # Parameters per domain (aligned with backend helper_classes.py)
 DOMAIN_PARAMS = {
@@ -266,9 +267,9 @@ DOMAIN_PARAMS = {
 def init_state():
     """Initializes session state for simulation."""
     if "sim_domain" not in st.session_state:
-        st.session_state.sim_domain = "Sales"
+        st.session_state.sim_domain = get_user_domain()
     if "sim_role" not in st.session_state:
-        st.session_state.sim_role = "CEO"
+        st.session_state.sim_role = get_user_role_context()
     if "sim_result" not in st.session_state:
         st.session_state.sim_result = None
     if "sim_error" not in st.session_state:
@@ -317,6 +318,17 @@ def run_simulation_backend():
     except requests.exceptions.ConnectionError:
         st.session_state.sim_error = "Backend not reachable. Start the backend server."
         st.session_state.sim_result = None
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else 0
+        if status == 429:
+            st.session_state.sim_error = "⏳ AI rate limit reached. Please wait a minute and try again."
+        else:
+            try:
+                detail = e.response.json().get("detail", str(e))
+            except Exception:
+                detail = str(e)
+            st.session_state.sim_error = f"Simulation error ({status}): {detail}"
+        st.session_state.sim_result = None
     except Exception as e:
         st.session_state.sim_error = f"Simulation error: {e}"
         st.session_state.sim_result = None
@@ -363,24 +375,23 @@ def render_sim_plotly(visuals: dict):
 init_state()
 
 # ==============================================================================
-# 5. TOP BAR – Title + Domain + Role + Dark Mode toggle
+# 5. TOP BAR – Title + user info + Dark Mode toggle
 # ==============================================================================
-top_brand, top_domain, top_role, top_toggle = st.columns([3, 2, 2, 2])
+# Fix domain/role from user profile on every render
+st.session_state.sim_domain = get_user_domain()
+st.session_state.sim_role = get_user_role_context()
+
+top_brand, _, top_toggle = st.columns([6, 3, 2])
 with top_brand:
-    st.markdown(f'<div class="sim-topbar-brand">🔬 Simulation Sandbox</div>', unsafe_allow_html=True)
-with top_domain:
-    domain_idx = DOMAINS.index(st.session_state.sim_domain) if st.session_state.sim_domain in DOMAINS else 0
-    new_domain = st.selectbox("Domain", DOMAINS, index=domain_idx, key="sim_domain_select", label_visibility="collapsed")
-    if new_domain != st.session_state.sim_domain:
-        st.session_state.sim_domain = new_domain
-        st.session_state.sim_result = None
-        st.rerun()
-with top_role:
-    role_idx = ROLES.index(st.session_state.sim_role) if st.session_state.sim_role in ROLES else 0
-    new_role = st.selectbox("Role", ROLES, index=role_idx, key="sim_role_select", label_visibility="collapsed")
-    if new_role != st.session_state.sim_role:
-        st.session_state.sim_role = new_role
-        st.rerun()
+    current_user = get_current_user()
+    dept_label = current_user.get("department", "") if current_user else ""
+    role_label = st.session_state.sim_role
+    st.markdown(
+        f'<div class="sim-topbar-brand">🔬 Simulation Sandbox'
+        f'<span style="font-size:0.95rem;color:{TEXT2};font-weight:400;opacity:0.85;margin-left:0.4rem;">'
+        f' · {dept_label} · {role_label}</span></div>',
+        unsafe_allow_html=True,
+    )
 with top_toggle:
     toggled = st.toggle("Dark Mode", value=st.session_state.dark_mode, key="theme_toggle")
     if toggled != st.session_state.dark_mode:

@@ -6,20 +6,15 @@ import json
 import asyncio
 from typing import Optional
 
-<<<<<<< HEAD
 from db_helper_functions import (
     init_db, close_db, recordInsight, getLatestInsightRecordFromDB,
     createUser, getUserHash, getUserDetails, getUserByUsername,
     getAllUsers, updateUser, deleteUser, countAdmins,
 )
 from helper_classes import (
-    LoginRequest, PromptRequest, InsightRequest, BaseSimulationRequest,
+    LoginRequest, PromptRequest, InsightRequest,
     RegistrationRequest, BatchUpdateRequest, SlackConnectRequest,
 )
-=======
-from db_helper_functions import init_db, close_db, recordInsight, getLatestInsightRecordFromDB, createUser, getUserHash, getUserDetails, getAllUsersDetails
-from helper_classes import LoginRequest, PromptRequest, InsightRequest, BaseSimulationRequest, RegistrationRequest, GetUserRequest
->>>>>>> main
 from hashing import hash_password, verify_hash
 from token_cryptography import generateToken
 from access_validation import admin_access_required, getUserFromToken
@@ -72,7 +67,11 @@ async def query_langgraph(messages, role, current_silo:str, is_simulation=False,
     except HTTPException as e:
         raise e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        err_str = str(e)
+        # Detect Groq/LLM rate-limit errors and return 429 instead of 500
+        if "rate_limit" in err_str.lower() or "429" in err_str:
+            raise HTTPException(status_code=429, detail=err_str)
+        raise HTTPException(status_code=500, detail=err_str)
 
 # Function to periodically get the latest insights from LangGraph
 # every 60 seconds and then insert it into the database
@@ -117,64 +116,67 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-async def retrieveSimulationResults(request: Request, set_fields: BaseSimulationRequest):
+@app.post("/simulation")
+async def getSimulation(request: Request, current_user: str = Depends(getUserFromToken)):
     try:
-        extra_params = await request.json()
-    except Exception as e:
-        return HTTPException(status_code=500, detail="Could not parse JSON inpu")
-    
-    # Remove set fields (domain, role_context, and prompt) from this
-    # to leave only extra parameters for the simulation
-    for field in set_fields.model_dump().keys():
-        if field in extra_params:
-            del extra_params[field]
-    
-    if set_fields.prompt is None:
-        set_fields.prompt = "Use simulation inputs to build a baseline query for revenue and latency trends."
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not parse JSON input")
+
+    domain = body.get("domain", "sales")
+    role_context = body.get("role_context", "Analyst")
+    prompt = body.get("prompt")
+
+    # Everything outside standard fields is a simulation parameter
+    standard_keys = {"domain", "role_context", "prompt"}
+    extra_params = {k: v for k, v in body.items() if k not in standard_keys}
+
+    if not prompt:
+        prompt = "Use simulation inputs to build a baseline query for revenue and latency trends."
 
     sim_inputs = {
-        "messages": [(set_fields.role_context, set_fields.prompt)],
-        "role": set_fields.role_context,
+        "messages": [(role_context, prompt)],
+        "role": role_context,
         "is_simulation": True,
         "simulation_inputs": extra_params,
-        "current_silo": set_fields.domain
+        "current_silo": domain,
     }
 
-    response = await query_langgraph(**sim_inputs)
+    return await query_langgraph(**sim_inputs)
 
-    return response
+# Function to get latest insights — uses cache if recent data exists,
+# otherwise calls LangGraph to generate fresh insights.
+_INSIGHT_CACHE_SECONDS = 120  # Only call LangGraph if no insight within this window
 
-@app.post("/simulation")
-async def getSimulation(request: Request, set_fields: BaseSimulationRequest, current_user: str = Depends(getUserFromToken)):
-    return await retrieveSimulationResults(request, set_fields)
-
-# Function to get latest row from insights table in the database 
 async def getLatestInsights(domain, role_context):
+    # First, check if we already have recent insights in the DB
+    cached = getLatestInsightRecordFromDB(domain)
+    if cached:
+        # Check if the most recent insight is fresh enough
+        from datetime import datetime, timedelta
+        try:
+            latest_ts = cached[0].get("timestamp", "")
+            # SQLite format: YYYY-MM-DD HH:MM:SS
+            latest_dt = datetime.strptime(latest_ts, "%Y-%m-%d %H:%M:%S")
+            if (datetime.now() - latest_dt).total_seconds() < _INSIGHT_CACHE_SECONDS:
+                return cached  # Return cached insights without calling LangGraph
+        except (ValueError, TypeError):
+            pass  # Timestamp parsing failed — generate new insight
+
+    # No recent insights — call LangGraph to generate a fresh one
     proactive_inputs = {
         "messages": [("user", "Perform a cross-domain health check. Look for anomalies.")],
-        "role": role_context, # Placeholder for now
+        "role": role_context,
         "is_simulation": False,
-        "current_silo": domain # Initializing to avoid KeyErrors
+        "current_silo": domain,
     }
-    
+
     insight_result = await query_langgraph(**proactive_inputs)
-    recordInsight(insight_result, domain)
+    # Only record real insights, not "no_insight" status dicts
+    if isinstance(insight_result, dict) and insight_result.get("status") != "no_insight":
+        recordInsight(insight_result, domain)
 
     return getLatestInsightRecordFromDB(domain)
-
-    # if PERIODIC_UPDATES:
-    #     insight_result = getLatestInsightRecordFromDB(domain)
-    # else:
-    #     proactive_inputs = {
-    #         "messages": [("user", "Perform a cross-domain health check. Look for anomalies.")],
-    #         "role": role_context, # Placeholder for now
-    #         "is_simulation": False,
-    #         "current_silo": domain # Initializing to avoid KeyErrors
-    #     }
-        
-    #     insight_result = await query_langgraph(**proactive_inputs)
-
-    # return insight_result
 
 @app.post("/insights")
 async def getInsights(data: InsightRequest, current_user: str = Depends(getUserFromToken)):
@@ -195,6 +197,16 @@ async def getPrompt(data: PromptRequest, current_user: str = Depends(getUserFrom
     }
 
     json_result = await query_langgraph(**inputs)
+
+    # For chat/prompt, extract a text response from the insight structure
+    if isinstance(json_result, dict):
+        # If it's a "no_insight" status, return a friendly chat_response
+        if json_result.get("status") == "no_insight":
+            return {"chat_response": json_result.get("message", "No insight generated for this request.")}
+        # If the insight has content with a summary, package it as chat_response
+        content = json_result.get("content", {})
+        if isinstance(content, dict) and content.get("summary"):
+            json_result["chat_response"] = content["summary"]
     return json_result
 
 @app.post("/auth/login")
@@ -230,7 +242,6 @@ async def addNewUser(data: RegistrationRequest, current_user: str = Depends(admi
         "user": getUserDetails(data.username)
     }
 
-<<<<<<< HEAD
 
 # ──────────────────────────────────────────────
 #  Admin – list / search users
@@ -385,21 +396,3 @@ async def connectSlack(
 ):
     """Register a Slack webhook URL (stub — actual webhook posting is TBD)."""
     return {"detail": "Slack webhook registered", "webhook_url": data.webhook_url}
-=======
-@app.get("/admin/user")
-async def getUser(search_username: Optional[str] = None, current_user: str = Depends(admin_access_required)):
-    print("LOG: search_username", search_username)
-    if search_username is None:
-        return {
-            "users": getAllUsersDetails()
-        }
-    else:
-        try:
-            return {
-                "users": [
-                    getUserDetails(search_username)
-                ]
-            }
-        except:
-            return {"detail": "User not found"}
->>>>>>> main

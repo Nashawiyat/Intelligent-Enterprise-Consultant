@@ -142,6 +142,11 @@ if not is_authenticated():
     .stCaption, [data-testid="stCaption"] {{
         color: {TEXT2} !important;
     }}
+    /* Hide 'Press Enter to submit form' helper text globally */
+    .stTextInput div[data-testid="InputInstructions"],
+    div[data-testid="InputInstructions"] {{
+        display: none !important;
+    }}
     </style>
     """, unsafe_allow_html=True)
 
@@ -153,8 +158,8 @@ if not is_authenticated():
     col_l, col_form, col_r = st.columns([1, 2, 1])
     with col_form:
         with st.form("login_form"):
-            username = st.text_input("Username", placeholder="admin / user / cfo / cto")
-            password = st.text_input("Password", type="password", placeholder="same as username")
+            username = st.text_input("Username", placeholder="Enter username")
+            password = st.text_input("Password", type="password", placeholder="Enter password")
             submitted = st.form_submit_button("Sign In", type="primary", use_container_width=True)
 
             if submitted:
@@ -162,8 +167,6 @@ if not is_authenticated():
                     st.rerun()
                 else:
                     st.error(st.session_state.login_error)
-
-        st.caption("Demo credentials: `admin`/`admin` · `user`/`user` · `cfo`/`cfo` · `cto`/`cto`")
 
     st.stop()  # ← nothing below runs until authenticated
 
@@ -196,7 +199,7 @@ html, body, [class*="css"] {{ font-family: 'Inter', sans-serif; }}
 
 .block-container {{
     padding-top: 0.8rem !important;
-    padding-bottom: 0 !important;
+    padding-bottom: 3rem !important;
 }}
 #MainMenu {{visibility: hidden;}}
 footer {{visibility: hidden;}}
@@ -463,17 +466,6 @@ with st.sidebar:
     # Account section – pushed to bottom via CSS
     with st.container(key="account_section"):
         st.markdown("---")
-
-        # Show current user info
-        if current_user:
-            display = current_user.get("display_name", current_user["username"])
-            role_badge = current_user.get("title", current_user.get("role", ""))
-            st.markdown(f"""
-            <div style="font-size:0.72rem;color:{TEXT2};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-                👤 {display}<br>
-                <span style="font-size:0.65rem;color:{ACCENT};">{role_badge}</span>
-            </div>
-            """, unsafe_allow_html=True)
 
         if st.button("🚪   Logout", key="logout_btn"):
             logout()

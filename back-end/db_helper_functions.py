@@ -48,34 +48,23 @@ def createUser(username, hashed, display_name, mode, department, role):
     conn.commit()
 
 def getUserHash(username):
-<<<<<<< HEAD
+    if not cursor:
+        raise Exception("Cursor not initialised")
     # Case-insensitive lookup
     return cursor.execute(
         "SELECT hash FROM Users WHERE LOWER(username) = LOWER(?)", (username,)
     ).fetchone()
 
 def getUserDetails(username):
+    if not cursor:
+        raise Exception("Cursor not initialised")
+    
     result = cursor.execute(
         "SELECT display_name, mode, department, role FROM Users WHERE LOWER(username) = LOWER(?)",
         (username,)
     ).fetchone()
     if result is None:
         return None
-=======
-    if not cursor:
-        raise Exception("Cursor not initialised")
-    
-    return cursor.execute("SELECT hash FROM Users WHERE username = ?", (username,)).fetchone()
-    
-def getUserDetails(username):
-    if not cursor:
-        raise Exception("Cursor not initialised")
-    
-    result = cursor.execute("SELECT display_name, mode, department, role FROM Users WHERE username = ?", (username,)).fetchone()
-    
-    if result is None:
-        return Exception("User not found")
->>>>>>> main
 
     return {
         "username": username,
@@ -85,10 +74,11 @@ def getUserDetails(username):
         "role": result[3],
     }
 
-<<<<<<< HEAD
 
 def getUserByUsername(username):
     """Case-insensitive exact match. Returns user dict or None."""
+    if not cursor:
+        raise Exception("Cursor not initialised")
     result = cursor.execute(
         "SELECT username, display_name, mode, department, role FROM Users WHERE LOWER(username) = LOWER(?)",
         (username,)
@@ -105,9 +95,11 @@ def getUserByUsername(username):
 
 
 def getAllUsers():
-    """Return list of all users (without hashes)."""
+    """Return list of all users (without hashes), ordered by department then username."""
+    if not cursor:
+        raise Exception("Cursor not initialised")
     rows = cursor.execute(
-        "SELECT username, display_name, mode, department, role FROM Users"
+        "SELECT username, display_name, mode, department, role FROM Users ORDER BY department, username"
     ).fetchall()
     return [
         {
@@ -127,6 +119,8 @@ def updateUser(username, **fields):
     Supported fields: display_name, mode, department, role, hash (for password).
     Returns True if a row was updated.
     """
+    if not cursor:
+        raise Exception("Cursor not initialised")
     allowed = {"display_name", "mode", "department", "role", "hash"}
     to_set = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if not to_set:
@@ -143,6 +137,8 @@ def updateUser(username, **fields):
 
 def deleteUser(username):
     """Delete a user by username. Returns True if deleted."""
+    if not cursor:
+        raise Exception("Cursor not initialised")
     cursor.execute(
         "DELETE FROM Users WHERE LOWER(username) = LOWER(?)", (username,)
     )
@@ -152,6 +148,8 @@ def deleteUser(username):
 
 def countAdmins():
     """Return count of admin users."""
+    if not cursor:
+        raise Exception("Cursor not initialised")
     result = cursor.execute(
         "SELECT COUNT(*) FROM Users WHERE mode = 'admin'"
     ).fetchone()
@@ -159,35 +157,11 @@ def countAdmins():
 
 
 def isModeAdmin(username):
+    if not cursor:
+        raise Exception("Cursor not initialised")
     result = cursor.execute(
         "SELECT mode FROM Users WHERE LOWER(username) = LOWER(?)", (username,)
     ).fetchone()
-=======
-def getAllUsersDetails():
-    if not cursor:
-        raise Exception("Cursor not initialised")
-
-    result = cursor.execute("SELECT username, display_name, mode, department, role FROM Users ORDER BY department, username")
-    result = result.fetchall()
-
-    listed = []
-    for (username, display_name, mode, department, role) in result:
-        listed.append({
-            "username": username,
-            "display_name": display_name,
-            "mode": mode,
-            "department": department,
-            "role": role
-        })
-    
-    return listed
-
-def isModeAdmin(username):
-    if not cursor:
-        raise Exception("Cursor not initialised")
-    
-    result = cursor.execute("SELECT mode FROM Users WHERE username = ?", (username,)).fetchone()
->>>>>>> main
     if result is None:
         raise Exception(f"Mode not found for username. Does {username} exist?")
 
