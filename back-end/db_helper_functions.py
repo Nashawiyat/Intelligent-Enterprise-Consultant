@@ -21,19 +21,40 @@ def recordInsight(json: str, domain: str):
     conn.commit()
 
 def getLatestInsightRecordFromDB(domain: str):
-    result = cursor.execute("SELECT json FROM Insights WHERE domain = ? ORDER BY savedAt DESC LIMIT 1", (domain,))
-    return result.fetchone()
+    if not cursor:
+        raise Exception("Cursor not initialised")
+    
+    result = cursor.execute("SELECT json, savedAt FROM Insights WHERE domain = ? ORDER BY savedAt DESC LIMIT 4", (domain,))
+    listed = []
+    for (json, savedAt) in result:
+        listed.append(
+            {
+                "timestamp": savedAt,
+                "insight": json 
+            }
+        )
+
+    return result.fetchall()
 
 def createUser(username, hashed, display_name, mode, department, role):
+    if not cursor:
+        raise Exception("Cursor not initialised")
+    
     data = (username, hashed, display_name, mode, department, role)
     cursor.execute(
         "INSERT INTO Users (username, hash, display_name, mode, department, role) VALUES (?, ?, ?, ?, ?, ?)", data)
     conn.commit()
 
 def getUserHash(username):
+    if not cursor:
+        raise Exception("Cursor not initialised")
+    
     return cursor.execute("SELECT hash FROM Users WHERE username = ?", (username,)).fetchone()
     
 def getUserDetails(username):
+    if not cursor:
+        raise Exception("Cursor not initialised")
+    
     result = cursor.execute("SELECT display_name, mode, department, role FROM Users WHERE username = ?", (username,)).fetchone()
 
     return {
@@ -44,12 +65,10 @@ def getUserDetails(username):
         "title": result[3]
     }
 
-# def loginUser(username, token):
-#     data = (username, token, mode)
-#     cursor.execute("INSERT INTO SessionTokens VALUES (?, ?, ?)", data)
-#     conn.commit()
-
 def isModeAdmin(username):
+    if not cursor:
+        raise Exception("Cursor not initialised")
+    
     result = cursor.execute("SELECT mode FROM Users WHERE username = ?", (username,)).fetchone()
     if result is None:
         raise Exception(f"Mode not found for username. Does {username} exist?")
