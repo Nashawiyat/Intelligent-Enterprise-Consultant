@@ -1,0 +1,298 @@
+import sqlite3
+import random
+from datetime import datetime, timedelta
+from faker import Faker
+
+fake = Faker()
+database = "one_database.db"
+
+def populate():
+    conn = sqlite3.connect(database)
+    cur = conn.cursor()
+    print("database population using faker")
+
+    # Step 1: Independent Tables
+      # Supplier, Customer, Products, Bank Accounts, Department, Insights
+
+    # Suppliers
+    supplier_ids = [] # array memories department ids, so we can link them up later
+    sup_categories = ['supplier', 'utilities', 'services', 'government']
+    for _ in range(40):
+        cur.execute("""INSERT INTO Supplier (companyName, streetAddress, postcode, city, state, country, 
+                                            firstName, lastName, email, telephone, ibancode, category) 
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (fake.company(), fake.street_address(), fake.postcode(), fake.city(), fake.state(), fake.country(),
+                     fake.first_name(), fake.last_name(), fake.unique.email(), fake.phone_number(), 
+                     fake.iban(), random.choice(sup_categories)))
+        supplier_ids.append(cur.lastrowid)
+
+    # Customers
+    customer_ids = []
+    cust_categories = ['B2C customer', 'B2B customer', 'government', 'affiliates']
+    for _ in range(50):
+        cur.execute("""INSERT INTO Customers (companyName, streetAddress, postcode, city, state, country, 
+                                             firstName, lastName, email, telephone, ibancode, category) 
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (fake.company(), fake.street_address(), fake.postcode(), fake.city(), fake.state(), fake.country(),
+                     fake.first_name(), fake.last_name(), fake.unique.email(), fake.phone_number(), 
+                     fake.iban(), random.choice(cust_categories)))
+        customer_ids.append(cur.lastrowid)
+
+    # Products (10)
+    product_ids = []
+    for product_name in ['FluxSwitch', 'ArcSwitch', 'VoltCore', 'Pointer 300', 'Nexus 320', 'Nexus 480', 'NP27', 'Nimbus189', 'Nimbus 190', 'Nimbus191']:
+        labor_cost = round(fake.random_int(50, 200) + fake.random.random(), 2)
+        overhead_cost = round(fake.random_int(5, 15) + fake.random.random(), 2)
+        initial_cost = round(labor_cost + overhead_cost, 2)
+        cur.execute("""INSERT INTO Products (productName, currentProductVersion, standardPrice, laborCost, overheadCost, costPerUnit) 
+                    VALUES (?,?,0.00,?,?,?)""",		# standardPrice will be updated when table ProductComponents is being populated
+                   (product_name, fake.random_int(1, 8), labor_cost, overhead_cost, initial_cost))
+        product_ids.append(cur.lastrowid)
+
+    # Bank Accounts
+    bank_ids = []
+    for acc in ['Maybank', 'CIMB Bank', 'Sparkasse']:
+        balances = round(fake.random_int(800000, 5000000) + fake.random.random(), 2)
+        cur.execute("INSERT INTO BankAccounts (accountName, ibancode, currentBalance) VALUES (?, ?, ?)",
+                    (acc, fake.iban(), balances))
+        bank_ids.append(cur.lastrowid)
+
+    # Departments
+    dept_ids = []
+    for d_name in ['Sales', 'Production', 'Finance', 'HR', 'Marketing', 'Purchasing']:
+        cur.execute("INSERT INTO Department (name) VALUES (?)", (d_name))
+        dept_ids.append(cur.lastrowid)
+
+    # Insights
+      # will be filled by Langraph
+
+    # tables 6/ 19
+
+
+
+
+    # Step 2: tables with foreign keys from step 1
+      # Components, BankAccountHistory, CustomerDiscount, QuantityDiscount,  Employee, Leads
+
+    # Components
+    component_ids = []
+    for category in ['housing', 'tech', 'wires', 'contacts', 'actuator', 'fastener', 'chip']:
+        category_base_price = round(random.uniform(5, 120), 2)
+        category_stock_range = round(random.uniform(1000, 100000), 2)
+        for _ in range(4):
+            u_price = round(category_base_price * (0.75 + (fake.random.random()/2)), 2)
+            u_stock = round(category_stock_range * (0.75 + (fake.random.random()/2)), 0)
+            cur.execute("INSERT INTO Components (componentName, stockQuantity, unitPrice, supplierID) VALUES (?,?,?,?)",
+                        (category, u_stock, u_price, random.choice(supplier_ids)))
+            component_ids.append(cur.lastrowid)
+
+    # CustomerDiscount
+    for c_id in customer_ids[:10]: 		# first 10 customers getting special deals(whales)
+        p_id = random.choice(product_ids)
+        discount = [10, 20, 30]
+        cur.execute("INSERT OR IGNORE INTO CustomerPrices (customerID, productID, customPrice) VALUES (?,?,?)",
+                   (c_id, p_id, random.choice(discount)))
+
+    # QuantityDiscounts
+    quantities = [50, 100, 250, 500]
+    for p_id in product_ids:
+	if(fake.random_int(1, 2) > 1):
+        	cur.execute("INSERT INTO CustomerDiscount (productID, minQuantity, discount) VALUES (?, ?, ?, ?)",
+                    (p_id, random.choice(customer_ids), random.choice(quantities), random.choice(discount))) 
+
+    # BankAccountHistory
+    for account in bank_ids:
+        for _ in range(random.randint(3, 5)):
+            past_balance = round(balance * (0.85 + random.random() / 4), 2)
+            past_date = datetime.now() - timedelta(days=random.randint(30, 730))
+            cur.execute(
+                "INSERT INTO BankAccountsHistory (accountID, balance, createdAt) VALUES (?, ?, ?)",
+                (account, past_balance, past_date.date())
+        )
+
+    # Employee
+    for dep in dept_ids:
+        for _ in range(random.randint(5, 20)):
+            cur.execute("INSERT INTO Employee (firstName, lastName, email, phone, salary, departmentID) VALUES (?,?,?,?,?,?)",
+                        (fake.first_name(), fake.last_name(), fake.unique.email(), fake.phone_number(), 
+                         random.randint(40000, 80000), dep))
+
+    # Leads
+    lead_ids = []
+    for c_id in customer_ids:
+        cur.execute("SELECT companyName, firstName, lastName, email FROM Customers WHERE customerID = ?", (c_id,))
+        c_data = cur.fetchone()
+        cur.execute("""INSERT INTO Leads (customerID, companyName, contactName, email, status) 
+                       VALUES (?, ?, ?, ?, 'Customer', ?)""",
+                    (c_id, c_data[0], f"{c_data[1]} {c_data[2]}", c_data[3]))
+        lead_ids.append(cur.lastrowid)
+
+    potential_statuses = ['New', 'Contacted', 'Qualified', 'Negotiation', 'Lost']
+    for _ in range(50):
+        fake_contact = f"{fake.first_name()} {fake.last_name()}"
+        cur.execute("""INSERT INTO Leads (customerID, companyName, contactName, email, status) 
+                     VALUES (NULL, ?, ?, ?, ?, ?)""",
+                   (fake.company(), fake_contact, fake.unique.email(), random.choice(potential_statuses)))
+        lead_ids.append(cur.lastrowid)
+
+    # tables 12/ 19
+
+    # Step 3: tables with foreign keys from step 2
+      # POrders, Interactions
+
+    # POrders
+    porder_ids = []
+    for c_id in component_ids:
+        for _ in range(random.randint(0, 3)):
+            supplier_id = cur.execute("SELECT supplierID FROM Components WHERE componentID=?", (c_id,)).fetchone()[0]
+            qty = random.randint(50, 1000)
+            unit_price = cur.execute("SELECT unitPrice FROM Components WHERE componentID=?", (c_id,)).fetchone()[0]
+            final_price = round(unit_price * qty, 2)
+            cur.execute("INSERT INTO POrders (componentID, supplierID, quantity, finalPrice, status) VALUES (?, ?, ?, ?, ?, ?)",
+                        (c_id, supplier_id, qty, final_price, 'pending'))
+            porder_ids.append(cur.lastrowid)
+
+
+    # Interactions
+    interaction_categories = ['Call', 'Email', 'Meeting', 'Note']
+    for l_id in lead_ids:
+        cur.execute(
+            "INSERT INTO Interactions (leadID, type, summary) VALUES (?, random.choice(interaction_categories), 'Automated follow-up')",
+            (l_id))
+
+
+    # tables 14/ 19
+
+    # Step 4: tables with foreign keys from step 3
+        # ProductComponents
+
+    # ProductComponents
+    components_by_category = {}
+    for category in ['housing', 'tech', 'wires', 'contacts', 'actuator', 'fastener', 'chip']:
+        cur.execute("SELECT componentID FROM Components WHERE category = ?", (category,))
+        components_by_category[category] = [row[0] for row in cur.fetchall()]
+
+    for p_id in product_ids:
+        for category, comps in components_by_category.items():
+            selected_component = random.choice(comps)  # pick one component from this category
+            quantity_required = random.randint(1, 5)  # random quantity for this product
+            cur.execute(
+                "INSERT INTO ProductComponents (productID, componentID, quantityRequired) VALUES (?, ?, ?)",
+                (p_id, selected_component, quantity_required))  
+
+    # tables 15/ 19
+
+    # Step 5: tables with foreign keys from step 4
+        # COrder, PriceHistory
+
+    # COrders
+    corder_ids = []
+
+    whale = customer_ids[0:3] * 20
+    medium_fish = customer_ids[3:20] * 10
+    small_fish = customer_ids[20:51] * 5
+    order_flow = whale + medium_fish + small_fish
+
+    for c_id in order_flow:
+        p_id = random.choice(product_ids)
+        qty = random.randint(1, 50)
+    
+        # Fetch standard price and cost
+        cur.execute("SELECT standardPrice, costPerUnit FROM Products WHERE productID = ?", (p_id,))
+        std_price, unit_cost = cur.fetchone()
+    
+        # Fetch CustomerDiscount (if any)
+        cur.execute("""
+            SELECT discount FROM CustomerDiscount 
+            WHERE customerID = ? AND productID = ?
+            """, (c_id, p_id))
+        cust_row = cur.fetchone()
+        cust_discount = cust_row[0] if cust_row else 0
+
+        # Fetch QuantityDiscount (if any)
+        cur.execute("""
+            SELECT discount FROM QuantityDiscounts 
+            WHERE productID = ? AND minQuantity <= ? 
+            ORDER BY minQuantity DESC LIMIT 1
+            """, (p_id, qty))
+        qty_row = cur.fetchone()
+        qty_discount = qty_row[0] if qty_row else 0
+
+        # Pick the bigger discount
+        best_discount = max(cust_discount, qty_discount)
+
+        # Calculate final price
+        price_per_unit = std_price * (100 - best_discount / 100)
+        final_price_total = round(price_per_unit * qty, 2)
+        profit = round(final_price_total - (unit_cost * qty), 2)
+
+        cur.execute("""INSERT INTO Orders 
+                   (productID, customerID, quantity, finalPrice, profit, status) 
+                    VALUES (?, ?, ?, ?, ?, 'paid')""", 
+                   (p_id, c_id, qty, final_price_total, profit))
+        corder_ids.append(cur.lastrowid)
+
+    # PriceHistory
+
+    for p_id in product_ids:
+        cur.execute("SELECT standardPrice FROM Products WHERE productID=?", (p_id,))
+    current_price = cur.fetchone()[0]
+
+    for i in range(HISTORY_ENTRIES):
+        days_ago = random.randint(30, 3*365)  # between 1 month and 3 years
+        hist_date = datetime.now() - timedelta(days=days_ago)
+        hist_price = round(current_price * random.uniform(0.85, 0.95), 2)
+        cur.execute("""INSERT INTO PriceHistory (productID, oldPrice, startDate)
+                     VALUES (?, ?, ?)""", 
+                   (p_id, hist_price, hist_date.date()))
+
+     # tables 17/ 19
+
+
+    # Step 6
+      # Transactions, ProductionOrders
+
+    # Transactions
+    for co_id in corder_ids:
+        cur.execute("SELECT customerID, finalPrice FROM COrders WHERE cOrderID = ?", (o_id,))
+        c_id, total = cur.fetchone()
+        net = round(total / 1.15, 2)
+        
+        cur.execute("""INSERT INTO Transactions (accountID, customerID, supplierID, orderID, taxAmount, netAmount, grossAmount, 
+                                                 dueDATE, direction, status) 
+                       VALUES (?, ?, NULL, ?, ?, ?, ?, ?, 'IN', 'completed')""",
+                    (random.choice(bank_ids), c_id, co_id, round(total-net, 2), net, total, datetime.now().date()))
+
+    for po_id in porder_ids:
+        cur.execute("SELECT supplierID, finalPrice FROM POrders WHERE pOrderID = ?", (po_id,))
+        row = cur.fetchone()
+        if not row:
+            continue  # Skip if order not found
+
+        supplier_id, total = row
+
+        net = round(total / 1.15, 2)
+        tax = round(total - net, 2)
+    
+        cur.execute("""INSERT INTO Transactions (accountID, customerID, supplierID, orderID, taxAmount, netAmount, grossAmount, 
+                                                 dueDATE, direction, status)
+                         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'OUT', 'completed')""", 
+                   (random.choice(bank_ids), supplier_id, po_id, tax, net, total, datetime.now().date()))
+
+    # ProductionOrder
+    for o_id in order_ids[:10]:  # first 10 orders  
+        cur.execute("SELECT productID FROM COrders WHERE cOrderID=?", (o_id,))
+        p_id = cur.fetchone()[0]
+        cur.execute("INSERT INTO ProductionOrder (productID, cOrderID, startDate, endDate, comments) VALUES (?, ?, ?)",
+                    (p_id, o_id, (datetime.now().date() + timedelta(days=random.randint(1, 10))), 
+		                 (datetime.now().date() + timedelta(days=random.randint(15, 30))), "Automated production entry"))
+
+    # tables 19/ 19
+
+    # closing population
+    conn.commit()
+    conn.close()
+    print("Database population complete.")
+
+if __name__ == "__main__":
+    populate()
