@@ -1,10 +1,13 @@
+import os
 import sqlite3
 import re
 from langchain_core.tools import tool
 from typing import List, Dict, Any
 
-# TODO: Fix to actual path
-DATABASE_PATH = "../enterprise_data.db"
+# Resolve DB path relative to this file so tests run from any cwd.
+DATABASE_PATH = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "enterprise_data2.db")
+)
 
 @tool
 def query_enterprise_database(sql_query: str) -> str:
