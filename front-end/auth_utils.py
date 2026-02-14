@@ -183,6 +183,20 @@ def get_all_users_with_passwords() -> list[dict]:
     return [dict(u) for u in st.session_state.users_db]
 
 
+def search_user_by_username(username: str) -> list[dict]:
+    """
+    Mock for GET /admin/users?search_username=<string>.
+    Case-insensitive but whitespace-sensitive exact match.
+    Returns a list with 0 or 1 matching users (with passwords for data_editor).
+    """
+    init_auth_state()
+    target = username.lower()
+    for u in st.session_state.users_db:
+        if u["username"].lower() == target:
+            return [dict(u)]
+    return []
+
+
 PASSWORD_MASK = "******"
 
 

@@ -17,7 +17,9 @@ from auth_utils import (
     get_all_users,
     get_all_users_with_passwords,
     create_user,
+    delete_user,
     batch_update_users,
+    search_user_by_username,
     PASSWORD_MASK,
 )
 
@@ -204,6 +206,12 @@ if "admin_filter_dept" not in st.session_state:
     st.session_state.admin_filter_dept = "All"
 if "admin_filter_title" not in st.session_state:
     st.session_state.admin_filter_title = "All"
+if "admin_search_query" not in st.session_state:
+    st.session_state.admin_search_query = ""
+if "admin_search_active" not in st.session_state:
+    st.session_state.admin_search_active = False
+if "admin_search_result" not in st.session_state:
+    st.session_state.admin_search_result = None  # None = no search, [] = not found, [user] = found
 
 # ──────────────────────────────────────────────
 # TOP BAR
@@ -260,207 +268,338 @@ with col_table:
             unsafe_allow_html=True,
         )
 
-        # ── Filters ──
-        flt_c1, flt_c2, flt_c3 = st.columns(3)
-        with flt_c1:
-            filter_role = st.selectbox(
-                "Filter by Role",
-                ["All"] + ROLES_OPTIONS,
-                index=(["All"] + ROLES_OPTIONS).index(st.session_state.admin_filter_role)
-                if st.session_state.admin_filter_role in (["All"] + ROLES_OPTIONS)
-                else 0,
-                key="flt_role",
+        # ══════════════════════════════════════════════
+        # SEARCH BAR
+        # ══════════════════════════════════════════════
+        srch_c1, srch_c2, srch_c3 = st.columns([5, 1, 1])
+        with srch_c1:
+            search_input = st.text_input(
+                "Search by Username",
+                value=st.session_state.admin_search_query,
+                placeholder="Enter exact username…",
+                key="search_username_input",
+                label_visibility="collapsed",
             )
-            if filter_role != st.session_state.admin_filter_role:
-                st.session_state.admin_filter_role = filter_role
-                st.session_state.admin_page_idx = 0
-                st.rerun()
-        with flt_c2:
-            filter_dept = st.selectbox(
-                "Filter by Department",
-                ["All"] + DEPARTMENTS,
-                index=(["All"] + DEPARTMENTS).index(st.session_state.admin_filter_dept)
-                if st.session_state.admin_filter_dept in (["All"] + DEPARTMENTS)
-                else 0,
-                key="flt_dept",
-            )
-            if filter_dept != st.session_state.admin_filter_dept:
-                st.session_state.admin_filter_dept = filter_dept
-                st.session_state.admin_page_idx = 0
-                st.rerun()
-        with flt_c3:
-            filter_title = st.selectbox(
-                "Filter by Title",
-                ["All"] + TITLES,
-                index=(["All"] + TITLES).index(st.session_state.admin_filter_title)
-                if st.session_state.admin_filter_title in (["All"] + TITLES)
-                else 0,
-                key="flt_title",
-            )
-            if filter_title != st.session_state.admin_filter_title:
-                st.session_state.admin_filter_title = filter_title
-                st.session_state.admin_page_idx = 0
-                st.rerun()
+        with srch_c2:
+            search_clicked = st.button("🔍 Search", key="search_btn", use_container_width=True)
+        with srch_c3:
+            clear_clicked = st.button("✕ Clear", key="clear_search_btn", use_container_width=True)
 
-        # ── Build filtered DataFrame (with masked passwords) ──
-        raw_users = get_all_users_with_passwords()
+        if clear_clicked:
+            st.session_state.admin_search_query = ""
+            st.session_state.admin_search_active = False
+            st.session_state.admin_search_result = None
+            st.rerun()
 
-        if st.session_state.admin_filter_role != "All":
-            raw_users = [u for u in raw_users if u.get("role") == st.session_state.admin_filter_role]
-        if st.session_state.admin_filter_dept != "All":
-            raw_users = [u for u in raw_users if u.get("department") == st.session_state.admin_filter_dept]
-        if st.session_state.admin_filter_title != "All":
-            raw_users = [u for u in raw_users if u.get("title") == st.session_state.admin_filter_title]
+        if search_clicked:
+            query = search_input.strip()
+            st.session_state.admin_search_query = query
+            if not query:
+                st.session_state.admin_search_active = False
+                st.session_state.admin_search_result = None
+            else:
+                st.session_state.admin_search_active = True
+                st.session_state.admin_search_result = search_user_by_username(query)
+            st.rerun()
 
-        if not raw_users:
-            st.info("No users match the current filters.")
-        else:
-            # Pagination math
-            total_filtered = len(raw_users)
-            total_pages = max(1, math.ceil(total_filtered / ROWS_PER_PAGE))
-            page_idx = min(st.session_state.admin_page_idx, total_pages - 1)
-            start = page_idx * ROWS_PER_PAGE
-            end = start + ROWS_PER_PAGE
-            page_users = raw_users[start:end]
+        # ══════════════════════════════════════════════
+        # SEARCH-MODE VIEW: single user editable table
+        # ══════════════════════════════════════════════
+        if st.session_state.admin_search_active:
+            result = st.session_state.admin_search_result
 
-            # Build DF with masked passwords + Delete checkbox
-            rows = []
-            for u in page_users:
-                rows.append({
-                    "Username": u["username"],
-                    "Name": u.get("display_name", ""),
-                    "Role": u.get("role", "user"),
-                    "Department": u.get("department", ""),
-                    "Title": u.get("title", ""),
-                    "Password": PASSWORD_MASK,
-                    "Delete?": False,
-                })
-            df = pd.DataFrame(rows)
-
-            # Column config for data_editor
-            column_config = {
-                "Username": st.column_config.TextColumn(
-                    "Username",
-                    disabled=True,
-                    width="small",
-                ),
-                "Name": st.column_config.TextColumn(
-                    "Name",
-                    width="medium",
-                ),
-                "Role": st.column_config.SelectboxColumn(
-                    "Role",
-                    options=ROLES_OPTIONS,
-                    width="small",
-                ),
-                "Department": st.column_config.SelectboxColumn(
-                    "Department",
-                    options=DEPARTMENTS,
-                    width="medium",
-                ),
-                "Title": st.column_config.SelectboxColumn(
-                    "Title",
-                    options=TITLES,
-                    width="medium",
-                ),
-                "Password": st.column_config.TextColumn(
-                    "Password",
-                    help="Shows ****** by default. Type a new value to change password.",
-                    width="small",
-                ),
-                "Delete?": st.column_config.CheckboxColumn(
-                    "Delete?",
-                    help="Check to mark user for deletion on Save.",
-                    width="small",
-                    default=False,
-                ),
-            }
-
-            edited_df = st.data_editor(
-                df,
-                column_config=column_config,
-                use_container_width=True,
-                hide_index=True,
-                num_rows="fixed",
-                key="users_data_editor",
-            )
-
-            # ── Pagination controls ──
-            pag_c1, pag_c2, pag_c3, pag_c4 = st.columns([1, 2, 2, 1])
-            with pag_c1:
-                if st.button("◀ Previous", key="page_prev", disabled=(page_idx == 0)):
-                    st.session_state.admin_page_idx = max(0, page_idx - 1)
-                    st.rerun()
-            with pag_c2:
-                st.markdown(
-                    f'<div style="text-align:center;font-size:0.82rem;color:{TEXT2};padding-top:0.4rem;">'
-                    f'Page {page_idx + 1} of {total_pages}  ·  {total_filtered} users</div>',
-                    unsafe_allow_html=True,
+            if not result:
+                st.warning(
+                    f"No user found with username: **{st.session_state.admin_search_query}**"
                 )
-            with pag_c3:
-                pass  # spacer
-            with pag_c4:
-                if st.button("Next ▶", key="page_next", disabled=(page_idx >= total_pages - 1)):
-                    st.session_state.admin_page_idx = min(total_pages - 1, page_idx + 1)
+            else:
+                found_user = result[0]
+                st.info(f"Showing result for username: **{found_user['username']}**")
+
+                search_rows = [{
+                    "Username": found_user["username"],
+                    "Name": found_user.get("display_name", ""),
+                    "Role": found_user.get("role", "user"),
+                    "Department": found_user.get("department", ""),
+                    "Title": found_user.get("title", ""),
+                    "Password": PASSWORD_MASK,
+                }]
+                search_df = pd.DataFrame(search_rows)
+
+                search_column_config = {
+                    "Username": st.column_config.TextColumn("Username", disabled=True, width="small"),
+                    "Name": st.column_config.TextColumn("Name", width="medium"),
+                    "Role": st.column_config.SelectboxColumn("Role", options=ROLES_OPTIONS, width="small"),
+                    "Department": st.column_config.SelectboxColumn("Department", options=DEPARTMENTS, width="medium"),
+                    "Title": st.column_config.SelectboxColumn("Title", options=TITLES, width="medium"),
+                    "Password": st.column_config.TextColumn(
+                        "Password", help="Type a new value to change.", width="small",
+                    ),
+                }
+
+                edited_search_df = st.data_editor(
+                    search_df,
+                    column_config=search_column_config,
+                    use_container_width=True,
+                    hide_index=True,
+                    num_rows="fixed",
+                    key="search_data_editor",
+                )
+
+                save_col, del_col, _ = st.columns([1, 1, 3])
+                with save_col:
+                    if st.button("💾 Save Changes", key="search_save_btn", type="primary", use_container_width=True):
+                        row = edited_search_df.iloc[0]
+                        diff: dict = {"username": found_user["username"]}
+                        has_changes = False
+
+                        if row["Name"] != found_user.get("display_name", ""):
+                            diff["display_name"] = row["Name"]
+                            has_changes = True
+                        if row["Role"] != found_user.get("role", "user"):
+                            diff["role"] = row["Role"]
+                            has_changes = True
+                        if row["Department"] != found_user.get("department", ""):
+                            diff["department"] = row["Department"]
+                            has_changes = True
+                        if row["Title"] != found_user.get("title", ""):
+                            diff["title"] = row["Title"]
+                            has_changes = True
+
+                        pw_val = row.get("Password", PASSWORD_MASK)
+                        if pw_val != PASSWORD_MASK and pw_val.strip():
+                            diff["password"] = pw_val
+                            has_changes = True
+
+                        if not has_changes:
+                            st.info("No changes detected.")
+                        else:
+                            updated, _, errors = batch_update_users([diff], [])
+                            if errors:
+                                for err in errors:
+                                    st.error(err)
+                            else:
+                                st.toast(f"User '{found_user['username']}' updated.", icon="✅")
+                            # Refresh search result to reflect changes
+                            st.session_state.admin_search_result = search_user_by_username(
+                                st.session_state.admin_search_query
+                            )
+                            st.rerun()
+
+                with del_col:
+                    if st.button("🗑️ Delete User", key="search_delete_btn", use_container_width=True):
+                        ok, msg = delete_user(found_user["username"])
+                        if ok:
+                            st.toast(f"User '{found_user['username']}' deleted.", icon="✅")
+                            # Revert to full user list
+                            st.session_state.admin_search_query = ""
+                            st.session_state.admin_search_active = False
+                            st.session_state.admin_search_result = None
+                            st.rerun()
+                        else:
+                            st.error(msg)
+
+        # ══════════════════════════════════════════════
+        # DEFAULT MODE: Filters + paginated batch-edit table
+        # ══════════════════════════════════════════════
+        else:
+            # ── Filters ──
+            flt_c1, flt_c2, flt_c3 = st.columns(3)
+            with flt_c1:
+                filter_role = st.selectbox(
+                    "Filter by Role",
+                    ["All"] + ROLES_OPTIONS,
+                    index=(["All"] + ROLES_OPTIONS).index(st.session_state.admin_filter_role)
+                    if st.session_state.admin_filter_role in (["All"] + ROLES_OPTIONS)
+                    else 0,
+                    key="flt_role",
+                )
+                if filter_role != st.session_state.admin_filter_role:
+                    st.session_state.admin_filter_role = filter_role
+                    st.session_state.admin_page_idx = 0
+                    st.rerun()
+            with flt_c2:
+                filter_dept = st.selectbox(
+                    "Filter by Department",
+                    ["All"] + DEPARTMENTS,
+                    index=(["All"] + DEPARTMENTS).index(st.session_state.admin_filter_dept)
+                    if st.session_state.admin_filter_dept in (["All"] + DEPARTMENTS)
+                    else 0,
+                    key="flt_dept",
+                )
+                if filter_dept != st.session_state.admin_filter_dept:
+                    st.session_state.admin_filter_dept = filter_dept
+                    st.session_state.admin_page_idx = 0
+                    st.rerun()
+            with flt_c3:
+                filter_title = st.selectbox(
+                    "Filter by Title",
+                    ["All"] + TITLES,
+                    index=(["All"] + TITLES).index(st.session_state.admin_filter_title)
+                    if st.session_state.admin_filter_title in (["All"] + TITLES)
+                    else 0,
+                    key="flt_title",
+                )
+                if filter_title != st.session_state.admin_filter_title:
+                    st.session_state.admin_filter_title = filter_title
+                    st.session_state.admin_page_idx = 0
                     st.rerun()
 
-            # ── Batch Save button ──
-            st.markdown("---")
-            if st.button("💾  Save Changes", key="batch_save_btn", type="primary", use_container_width=True):
-                # Diff edited data against original page_users
-                updates: list[dict] = []
-                deletes: list[str] = []
+            # ── Build filtered DataFrame (with masked passwords) ──
+            raw_users = get_all_users_with_passwords()
 
-                for i, row in edited_df.iterrows():
-                    original = page_users[i]
-                    uname = original["username"]
+            if st.session_state.admin_filter_role != "All":
+                raw_users = [u for u in raw_users if u.get("role") == st.session_state.admin_filter_role]
+            if st.session_state.admin_filter_dept != "All":
+                raw_users = [u for u in raw_users if u.get("department") == st.session_state.admin_filter_dept]
+            if st.session_state.admin_filter_title != "All":
+                raw_users = [u for u in raw_users if u.get("title") == st.session_state.admin_filter_title]
 
-                    # Mark for delete?
-                    if row.get("Delete?", False):
-                        deletes.append(uname)
-                        continue
+            if not raw_users:
+                st.info("No users match the current filters.")
+            else:
+                # Pagination math
+                total_filtered = len(raw_users)
+                total_pages = max(1, math.ceil(total_filtered / ROWS_PER_PAGE))
+                page_idx = min(st.session_state.admin_page_idx, total_pages - 1)
+                start = page_idx * ROWS_PER_PAGE
+                end = start + ROWS_PER_PAGE
+                page_users = raw_users[start:end]
 
-                    # Gather changed fields
-                    diff: dict = {"username": uname}
-                    has_changes = False
+                # Build DF with masked passwords + Delete checkbox
+                rows = []
+                for u in page_users:
+                    rows.append({
+                        "Username": u["username"],
+                        "Name": u.get("display_name", ""),
+                        "Role": u.get("role", "user"),
+                        "Department": u.get("department", ""),
+                        "Title": u.get("title", ""),
+                        "Password": PASSWORD_MASK,
+                        "Delete?": False,
+                    })
+                df = pd.DataFrame(rows)
 
-                    if row["Name"] != original.get("display_name", ""):
-                        diff["display_name"] = row["Name"]
-                        has_changes = True
-                    if row["Role"] != original.get("role", "user"):
-                        diff["role"] = row["Role"]
-                        has_changes = True
-                    if row["Department"] != original.get("department", ""):
-                        diff["department"] = row["Department"]
-                        has_changes = True
-                    if row["Title"] != original.get("title", ""):
-                        diff["title"] = row["Title"]
-                        has_changes = True
+                # Column config for data_editor
+                column_config = {
+                    "Username": st.column_config.TextColumn(
+                        "Username",
+                        disabled=True,
+                        width="small",
+                    ),
+                    "Name": st.column_config.TextColumn(
+                        "Name",
+                        width="medium",
+                    ),
+                    "Role": st.column_config.SelectboxColumn(
+                        "Role",
+                        options=ROLES_OPTIONS,
+                        width="small",
+                    ),
+                    "Department": st.column_config.SelectboxColumn(
+                        "Department",
+                        options=DEPARTMENTS,
+                        width="medium",
+                    ),
+                    "Title": st.column_config.SelectboxColumn(
+                        "Title",
+                        options=TITLES,
+                        width="medium",
+                    ),
+                    "Password": st.column_config.TextColumn(
+                        "Password",
+                        help="Shows ****** by default. Type a new value to change password.",
+                        width="small",
+                    ),
+                    "Delete?": st.column_config.CheckboxColumn(
+                        "Delete?",
+                        help="Check to mark user for deletion on Save.",
+                        width="small",
+                        default=False,
+                    ),
+                }
 
-                    # Password: only send if changed (not still masked)
-                    pw_val = row.get("Password", PASSWORD_MASK)
-                    if pw_val != PASSWORD_MASK and pw_val.strip():
-                        diff["password"] = pw_val
-                        has_changes = True
+                edited_df = st.data_editor(
+                    df,
+                    column_config=column_config,
+                    use_container_width=True,
+                    hide_index=True,
+                    num_rows="fixed",
+                    key="users_data_editor",
+                )
 
-                    if has_changes:
-                        updates.append(diff)
+                # ── Pagination controls ──
+                pag_c1, pag_c2, pag_c3, pag_c4 = st.columns([1, 2, 2, 1])
+                with pag_c1:
+                    if st.button("◀ Previous", key="page_prev", disabled=(page_idx == 0)):
+                        st.session_state.admin_page_idx = max(0, page_idx - 1)
+                        st.rerun()
+                with pag_c2:
+                    st.markdown(
+                        f'<div style="text-align:center;font-size:0.82rem;color:{TEXT2};padding-top:0.4rem;">'
+                        f'Page {page_idx + 1} of {total_pages}  ·  {total_filtered} users</div>',
+                        unsafe_allow_html=True,
+                    )
+                with pag_c3:
+                    pass  # spacer
+                with pag_c4:
+                    if st.button("Next ▶", key="page_next", disabled=(page_idx >= total_pages - 1)):
+                        st.session_state.admin_page_idx = min(total_pages - 1, page_idx + 1)
+                        st.rerun()
 
-                if not updates and not deletes:
-                    st.info("No changes detected.")
-                else:
-                    updated, deleted, errors = batch_update_users(updates, deletes)
-                    if errors:
-                        for err in errors:
-                            st.error(err)
-                    summary_parts = []
-                    if updated:
-                        summary_parts.append(f"{updated} updated")
-                    if deleted:
-                        summary_parts.append(f"{deleted} deleted")
-                    if summary_parts:
-                        st.toast(", ".join(summary_parts), icon="✅")
-                    st.rerun()
+                # ── Batch Save button ──
+                st.markdown("---")
+                if st.button("💾  Save Changes", key="batch_save_btn", type="primary", use_container_width=True):
+                    updates: list[dict] = []
+                    deletes: list[str] = []
+
+                    for i, row in edited_df.iterrows():
+                        original = page_users[i]
+                        uname = original["username"]
+
+                        if row.get("Delete?", False):
+                            deletes.append(uname)
+                            continue
+
+                        diff: dict = {"username": uname}
+                        has_changes = False
+
+                        if row["Name"] != original.get("display_name", ""):
+                            diff["display_name"] = row["Name"]
+                            has_changes = True
+                        if row["Role"] != original.get("role", "user"):
+                            diff["role"] = row["Role"]
+                            has_changes = True
+                        if row["Department"] != original.get("department", ""):
+                            diff["department"] = row["Department"]
+                            has_changes = True
+                        if row["Title"] != original.get("title", ""):
+                            diff["title"] = row["Title"]
+                            has_changes = True
+
+                        pw_val = row.get("Password", PASSWORD_MASK)
+                        if pw_val != PASSWORD_MASK and pw_val.strip():
+                            diff["password"] = pw_val
+                            has_changes = True
+
+                        if has_changes:
+                            updates.append(diff)
+
+                    if not updates and not deletes:
+                        st.info("No changes detected.")
+                    else:
+                        updated, deleted, errors = batch_update_users(updates, deletes)
+                        if errors:
+                            for err in errors:
+                                st.error(err)
+                        summary_parts = []
+                        if updated:
+                            summary_parts.append(f"{updated} updated")
+                        if deleted:
+                            summary_parts.append(f"{deleted} deleted")
+                        if summary_parts:
+                            st.toast(", ".join(summary_parts), icon="✅")
+                        st.rerun()
 
 # ─────────────────────────────────────────────
 # RIGHT: Create User form + API Contract status
@@ -521,8 +660,9 @@ with col_form:
         <div style="font-size:0.8rem;color:{TEXT2};line-height:1.6;">
             <b>Backend endpoints needed:</b><br>
             ⬜ <code>POST /auth/login</code> — Authentication<br>
-            ⬜ <code>GET /admin/users</code> — List users<br>
+            ⬜ <code>GET /admin/users</code> — List / Search users<br>
             ⬜ <code>POST /admin/users</code> — Create user<br>
+            ⬜ <code>DELETE /admin/users/{'{'}username{'}'}</code> — Delete user<br>
             ⬜ <code>PATCH /admin/users/batch</code> — Batch update + delete<br>
             ⬜ <code>POST /chat</code> — Chat with attachment<br>
             ⬜ <code>POST /integrations/slack/connect</code> — Slack<br>

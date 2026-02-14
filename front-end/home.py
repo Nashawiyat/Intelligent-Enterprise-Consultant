@@ -337,22 +337,52 @@ button[data-testid="stBaseButton-primaryFormSubmit"]:hover {{
     font-size: 0.78rem !important;
 }}
 
-/* === File uploader === */
-[data-testid="stFileUploader"] {{
+/* === Floating file drop zone === */
+.st-key-file_drop_zone {{
     background: {CARD_INNER} !important;
     border: 1.5px dashed {BORDER} !important;
-    border-radius: 12px !important;
-    padding: 0.5rem !important;
+    border-radius: 10px !important;
+    padding: 0.25rem 0.5rem !important;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.10) !important;
+    margin: 0.3rem 0 0.2rem 0 !important;
 }}
-[data-testid="stFileUploader"] label p {{
-    color: {TEXT} !important;
-    font-weight: 500 !important;
+.st-key-file_drop_zone [data-testid="stFileUploader"] {{
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
 }}
-[data-testid="stFileUploader"] section {{
-    padding: 0.3rem !important;
+.st-key-file_drop_zone [data-testid="stFileUploader"] label {{
+    display: none !important;
 }}
-[data-testid="stFileUploader"] small {{
+.st-key-file_drop_zone [data-testid="stFileUploader"] section {{
+    padding: 0.1rem 0 !important;
+}}
+.st-key-file_drop_zone [data-testid="stFileUploader"] section > div {{
+    padding-top: 0 !important;
+}}
+.st-key-file_drop_zone [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] {{
+    padding: 0.35rem 0.5rem !important;
+    min-height: unset !important;
+}}
+.st-key-file_drop_zone [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] span {{
+    font-size: 0.72rem !important;
     color: {TEXT2} !important;
+}}
+.st-key-file_drop_zone [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] button {{
+    font-size: 0.72rem !important;
+    padding: 0.15rem 0.5rem !important;
+}}
+.st-key-file_drop_zone [data-testid="stFileUploader"] small {{
+    font-size: 0.6rem !important;
+    color: {TEXT2} !important;
+}}
+.st-key-file_drop_zone .drop-label {{
+    font-size: 0.72rem;
+    color: {TEXT2};
+    margin: 0 0 0.15rem 0;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
 }}
 
 /* === Context upload badge === */
@@ -816,19 +846,39 @@ with chat_col:
             </script>
             """, height=0, scrolling=False)
 
-        # ── Integrated file uploader (above chat input) ──
-        chat_attachment = st.file_uploader(
-            "Attach context (PDF/CSV)",
-            type=["pdf", "csv"],
-            key=f"chat_attachment_{st.session_state.chat_file_key}",
-            label_visibility="collapsed",
-        )
-        if chat_attachment:
+        # ── Floating file drop zone ──
+        _MAX_FILE_MB = 200
+        _upload_key = f"chat_attachment_{st.session_state.chat_file_key}"
+
+        with st.container(key="file_drop_zone"):
             st.markdown(
-                f'<span class="context-badge">📎 {chat_attachment.name} '
-                f'({round(chat_attachment.size / 1024, 1)} KB)</span>',
+                '<p class="drop-label">📎 Drop or browse &middot; '
+                '<b>.pdf / .csv</b> &middot; max 200 MB</p>',
                 unsafe_allow_html=True,
             )
+            _raw_file = st.file_uploader(
+                "Attach file",
+                type=["pdf", "csv"],
+                key=_upload_key,
+                label_visibility="collapsed",
+            )
+
+        # Validate the uploaded file
+        chat_attachment = None
+        if _raw_file is not None:
+            _ext = _raw_file.name.rsplit(".", 1)[-1].lower() if "." in _raw_file.name else ""
+            _size_mb = _raw_file.size / (1024 * 1024)
+            if _ext not in ("pdf", "csv"):
+                st.toast(f"❌ Unsupported file type '.{_ext}'. Only PDF and CSV are accepted.", icon="🚫")
+            elif _size_mb > _MAX_FILE_MB:
+                st.toast(f"❌ File too large ({_size_mb:.1f} MB). Maximum is {_MAX_FILE_MB} MB.", icon="🚫")
+            else:
+                chat_attachment = _raw_file
+                st.markdown(
+                    f'<span class="context-badge" style="margin:0;">📎 {chat_attachment.name} '
+                    f'({round(chat_attachment.size / 1024, 1)} KB)</span>',
+                    unsafe_allow_html=True,
+                )
 
         user_input = st.chat_input("Ask anything...", key="chat_input")
         if user_input:

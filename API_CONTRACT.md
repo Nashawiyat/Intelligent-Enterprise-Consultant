@@ -52,8 +52,13 @@
 
 | Field | Value |
 |---|---|
-| **Description** | Return all registered users. Requires admin token. |
+| **Description** | Return all registered users, or search for a specific user. Requires admin token. |
 | **Auth Header** | `Authorization: Bearer <token>` |
+
+**Query Parameters:**
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `search_username` | `string` | no | Exact username to search for. **Case-insensitive, whitespace-sensitive.** When provided, returns 0 or 1 matching users instead of the full list. |
 
 **Response (200):**
 ```json
@@ -69,6 +74,9 @@
   ]
 }
 ```
+
+> When `search_username` is provided and no match is found, the response is `{ "users": [] }` (HTTP 200, empty array — **not** a 404).
+
 
 ### `POST /admin/users`
 
@@ -336,7 +344,13 @@
 | `domain` | `string` | yes | Target domain (sales, operations, hr, accounting, crm) |
 | `role_context` | `string` | yes | User role / title for response tailoring |
 | `prompt` | `string` | yes | The user's chat message |
-| `file` | `file` | no | Optional PDF or CSV attachment for additional context |
+| `file` | `file` | no | Optional PDF or CSV attachment for additional context. **Accepted types:** `.pdf`, `.csv`. **Max size:** 200 MB. |
+
+**Error Responses:**
+| Status | Condition | Body |
+|---|---|---|
+| `400` | Unsupported file type (not `.pdf`/`.csv`) | `{ "detail": "Unsupported file type. Accepted: pdf, csv" }` |
+| `413` | File exceeds 200 MB | `{ "detail": "File too large. Maximum size is 200 MB." }` |
 
 **Response (200):**
 ```json
