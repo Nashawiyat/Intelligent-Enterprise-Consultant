@@ -4,6 +4,9 @@ import operator
 
 class AgentState(TypedDict):
     messages: Annotated[List[BaseMessage], operator.add]
+    interaction_mode: str
+    intent_mode: str
+    active_focus: Union[str, None]
     role: str
     sql_query: str
     sql_results: Dict[str, Any]

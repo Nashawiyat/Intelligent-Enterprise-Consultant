@@ -44,6 +44,11 @@ async def run_test(test_name, inputs):
         print("\n🔕 Filter Active: No material change detected. Insight suppressed.")
         return
 
+    chat_response = insight.get("chat_response") if isinstance(insight, dict) else None
+    if chat_response:
+        print(f"\n💬 AI CHAT REPLY:\n{chat_response}")
+        return
+
     if "content" in insight:
         print(f"\n📢 HEADLINE: {insight['content']['headline']}")
         print(f"📊 METRICS: Urgency: {insight['meta']['urgency_score']} | Confidence: {insight['meta']['confidence_score']}")
