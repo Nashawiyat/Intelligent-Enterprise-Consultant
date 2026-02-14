@@ -1,13 +1,12 @@
 from fastapi import FastAPI, HTTPException, Request
 from contextlib import asynccontextmanager
-import json
 import os
 import asyncio
 
-from db_helper_functions import init_db_insights, close_db_insights, recordInsight, getLatestInsightRecordFromDB
-from helper_classes import PromptRequest, InsightRequest, SimulationRequest, BaseSimulationRequest
-
-# LangGraph agent to process queries
+from db_helper_functions import init_db, close_db, recordInsight, getLatestInsightRecordFromDB, createUser, getUserHash, getUserDetails, loginUser
+from helper_classes import LoginRequest, PromptRequest, InsightRequest, BaseSimulationRequest
+from hashing import hash_password, verify_hash
+from token_cryptography import generateToken
 
 from dotenv import load_dotenv
 
@@ -17,6 +16,8 @@ load_dotenv()
 if not os.getenv("GROQ_API_KEY"):
     print("ERROR: GROQ_API_KEY not found in .env")
     exit(1)
+
+# LangGraph agent to process queries
 from agent import enterprise_agent
 
 # Set to true to have system get latest insights periodically from LLM
@@ -80,13 +81,13 @@ async def lifespan(app: FastAPI):
     # Startup function
     if PERIODIC_UPDATES:
         task = asyncio.create_task(retrievePeriodicUpdatedInsights())
-    init_db_insights()
+    init_db()
 
     # Run teh app
     yield
 
     # Close database connection when no longer required
-    close_db_insights()
+    close_db()
 
     if PERIODIC_UPDATES:
         # Cancel the task once the app closes
@@ -166,3 +167,19 @@ async def getPrompt(data: PromptRequest):
 
     json_result = await query_langgraph(**inputs)
     return json_result
+
+@app.post("/auth/login")
+async def login(data: LoginRequest):
+    recorded_hash = getUserHash(data.username)
+    if recorded_hash is None:
+        return {"detail": "User does not exist"}
+    
+    if verify_hash(data.password, recorded_hash[0]):
+        token = generateToken(data.username)
+        loginUser(data.username, token)
+        return {
+            "token": token,
+            "user": getUserDetails(data.username)
+        }
+    else:
+        return {"detail": "Invalid credentials"}

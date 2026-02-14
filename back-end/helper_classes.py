@@ -1,6 +1,10 @@
 from pydantic import BaseModel
 from typing import Literal, TypeAlias, Union
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
 class InsightRequest(BaseModel):
     domain: str
     role_context: str
