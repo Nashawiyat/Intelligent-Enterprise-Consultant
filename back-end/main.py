@@ -1,11 +1,20 @@
-from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi import FastAPI, HTTPException, Request, Depends, UploadFile, File, Form, Query
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 import os
+import json
 import asyncio
 from typing import Optional
 
-from db_helper_functions import init_db, close_db, recordInsight, getLatestInsightRecordFromDB, createUser, getUserHash, getUserDetails, getAllUsersDetails
-from helper_classes import LoginRequest, PromptRequest, InsightRequest, BaseSimulationRequest, RegistrationRequest, GetUserRequest
+from db_helper_functions import (
+    init_db, close_db, recordInsight, getLatestInsightRecordFromDB,
+    createUser, getUserHash, getUserDetails, getUserByUsername,
+    getAllUsers, updateUser, deleteUser, countAdmins,
+)
+from helper_classes import (
+    LoginRequest, PromptRequest, InsightRequest,
+    RegistrationRequest, BatchUpdateRequest, SlackConnectRequest,
+)
 from hashing import hash_password, verify_hash
 from token_cryptography import generateToken
 from access_validation import admin_access_required, getUserFromToken
@@ -58,7 +67,11 @@ async def query_langgraph(messages, role, current_silo:str, is_simulation=False,
     except HTTPException as e:
         raise e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        err_str = str(e)
+        # Detect Groq/LLM rate-limit errors and return 429 instead of 500
+        if "rate_limit" in err_str.lower() or "429" in err_str:
+            raise HTTPException(status_code=429, detail=err_str)
+        raise HTTPException(status_code=500, detail=err_str)
 
 # Function to periodically get the latest insights from LangGraph
 # every 60 seconds and then insert it into the database
@@ -103,64 +116,67 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-async def retrieveSimulationResults(request: Request, set_fields: BaseSimulationRequest):
+@app.post("/simulation")
+async def getSimulation(request: Request, current_user: str = Depends(getUserFromToken)):
     try:
-        extra_params = await request.json()
-    except Exception as e:
-        return HTTPException(status_code=500, detail="Could not parse JSON inpu")
-    
-    # Remove set fields (domain, role_context, and prompt) from this
-    # to leave only extra parameters for the simulation
-    for field in set_fields.model_dump().keys():
-        if field in extra_params:
-            del extra_params[field]
-    
-    if set_fields.prompt is None:
-        set_fields.prompt = "Use simulation inputs to build a baseline query for revenue and latency trends."
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not parse JSON input")
+
+    domain = body.get("domain", "sales")
+    role_context = body.get("role_context", "Analyst")
+    prompt = body.get("prompt")
+
+    # Everything outside standard fields is a simulation parameter
+    standard_keys = {"domain", "role_context", "prompt"}
+    extra_params = {k: v for k, v in body.items() if k not in standard_keys}
+
+    if not prompt:
+        prompt = "Use simulation inputs to build a baseline query for revenue and latency trends."
 
     sim_inputs = {
-        "messages": [(set_fields.role_context, set_fields.prompt)],
-        "role": set_fields.role_context,
+        "messages": [(role_context, prompt)],
+        "role": role_context,
         "is_simulation": True,
         "simulation_inputs": extra_params,
-        "current_silo": set_fields.domain
+        "current_silo": domain,
     }
 
-    response = await query_langgraph(**sim_inputs)
+    return await query_langgraph(**sim_inputs)
 
-    return response
+# Function to get latest insights — uses cache if recent data exists,
+# otherwise calls LangGraph to generate fresh insights.
+_INSIGHT_CACHE_SECONDS = 120  # Only call LangGraph if no insight within this window
 
-@app.post("/simulation")
-async def getSimulation(request: Request, set_fields: BaseSimulationRequest, current_user: str = Depends(getUserFromToken)):
-    return await retrieveSimulationResults(request, set_fields)
-
-# Function to get latest row from insights table in the database 
 async def getLatestInsights(domain, role_context):
+    # First, check if we already have recent insights in the DB
+    cached = getLatestInsightRecordFromDB(domain)
+    if cached:
+        # Check if the most recent insight is fresh enough
+        from datetime import datetime, timedelta
+        try:
+            latest_ts = cached[0].get("timestamp", "")
+            # SQLite format: YYYY-MM-DD HH:MM:SS
+            latest_dt = datetime.strptime(latest_ts, "%Y-%m-%d %H:%M:%S")
+            if (datetime.now() - latest_dt).total_seconds() < _INSIGHT_CACHE_SECONDS:
+                return cached  # Return cached insights without calling LangGraph
+        except (ValueError, TypeError):
+            pass  # Timestamp parsing failed — generate new insight
+
+    # No recent insights — call LangGraph to generate a fresh one
     proactive_inputs = {
         "messages": [("user", "Perform a cross-domain health check. Look for anomalies.")],
-        "role": role_context, # Placeholder for now
+        "role": role_context,
         "is_simulation": False,
-        "current_silo": domain # Initializing to avoid KeyErrors
+        "current_silo": domain,
     }
-    
+
     insight_result = await query_langgraph(**proactive_inputs)
-    recordInsight(insight_result, domain)
+    # Only record real insights, not "no_insight" status dicts
+    if isinstance(insight_result, dict) and insight_result.get("status") != "no_insight":
+        recordInsight(insight_result, domain)
 
     return getLatestInsightRecordFromDB(domain)
-
-    # if PERIODIC_UPDATES:
-    #     insight_result = getLatestInsightRecordFromDB(domain)
-    # else:
-    #     proactive_inputs = {
-    #         "messages": [("user", "Perform a cross-domain health check. Look for anomalies.")],
-    #         "role": role_context, # Placeholder for now
-    #         "is_simulation": False,
-    #         "current_silo": domain # Initializing to avoid KeyErrors
-    #     }
-        
-    #     insight_result = await query_langgraph(**proactive_inputs)
-
-    # return insight_result
 
 @app.post("/insights")
 async def getInsights(data: InsightRequest, current_user: str = Depends(getUserFromToken)):
@@ -181,13 +197,23 @@ async def getPrompt(data: PromptRequest, current_user: str = Depends(getUserFrom
     }
 
     json_result = await query_langgraph(**inputs)
+
+    # For chat/prompt, extract a text response from the insight structure
+    if isinstance(json_result, dict):
+        # If it's a "no_insight" status, return a friendly chat_response
+        if json_result.get("status") == "no_insight":
+            return {"chat_response": json_result.get("message", "No insight generated for this request.")}
+        # If the insight has content with a summary, package it as chat_response
+        content = json_result.get("content", {})
+        if isinstance(content, dict) and content.get("summary"):
+            json_result["chat_response"] = content["summary"]
     return json_result
 
 @app.post("/auth/login")
 async def login(data: LoginRequest):
     recorded_hash = getUserHash(data.username)
     if recorded_hash is None:
-        return {"detail": "User does not exist"}
+        raise HTTPException(status_code=401, detail="User does not exist")
     
     if verify_hash(data.password, recorded_hash[0]):
         token = generateToken(data.username)
@@ -196,10 +222,15 @@ async def login(data: LoginRequest):
             "user": getUserDetails(data.username)
         }
     else:
-        return {"detail": "Invalid credentials"}
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
 @app.post("/admin/users")
 async def addNewUser(data: RegistrationRequest, current_user: str = Depends(admin_access_required)):
+    # Check if user already exists
+    existing = getUserByUsername(data.username)
+    if existing:
+        raise HTTPException(status_code=409, detail=f"User '{data.username}' already exists")
+
     hashed = hash_password(data.password)
     data_dict = data.__dict__
     del data_dict['password']
@@ -211,19 +242,157 @@ async def addNewUser(data: RegistrationRequest, current_user: str = Depends(admi
         "user": getUserDetails(data.username)
     }
 
-@app.get("/admin/user")
-async def getUser(search_username: Optional[str] = None, current_user: str = Depends(admin_access_required)):
-    print("LOG: search_username", search_username)
-    if search_username is None:
-        return {
-            "users": getAllUsersDetails()
-        }
-    else:
+
+# ──────────────────────────────────────────────
+#  Admin – list / search users
+# ──────────────────────────────────────────────
+@app.get("/admin/users")
+async def listUsers(
+    search_username: str | None = Query(None),
+    current_user: str = Depends(admin_access_required),
+):
+    """Return all users, or filter by partial username match."""
+    users = getAllUsers()
+    if search_username:
+        q = search_username.lower()
+        users = [u for u in users if q in u["username"].lower()]
+    return {"users": users}
+
+
+# ──────────────────────────────────────────────
+#  Admin – delete a single user
+# ──────────────────────────────────────────────
+@app.delete("/admin/users/{username}")
+async def removeUser(username: str, current_user: str = Depends(admin_access_required)):
+    target = getUserByUsername(username)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"User '{username}' not found")
+
+    # Prevent deleting the last admin
+    if target["mode"] == "admin" and countAdmins() <= 1:
+        raise HTTPException(status_code=400, detail="Cannot delete the last admin user")
+
+    # Prevent self-deletion
+    if target["username"].lower() == current_user.lower():
+        raise HTTPException(status_code=400, detail="Cannot delete yourself")
+
+    deleteUser(username)
+    return {"detail": f"User '{username}' deleted"}
+
+
+# ──────────────────────────────────────────────
+#  Admin – batch update / delete users
+# ──────────────────────────────────────────────
+@app.patch("/admin/users/batch")
+async def batchUpdateUsers(
+    data: BatchUpdateRequest,
+    current_user: str = Depends(admin_access_required),
+):
+    results = {"updated": [], "deleted": [], "errors": []}
+
+    # --- updates ---
+    for item in data.updates:
+        target = getUserByUsername(item.username)
+        if target is None:
+            results["errors"].append(f"User '{item.username}' not found")
+            continue
+
+        fields = {}
+        if item.display_name is not None:
+            fields["display_name"] = item.display_name
+        if item.mode is not None:
+            # Prevent removing the last admin
+            if target["mode"] == "admin" and item.mode != "admin" and countAdmins() <= 1:
+                results["errors"].append(f"Cannot demote '{item.username}' – last admin")
+                continue
+            fields["mode"] = item.mode
+        if item.department is not None:
+            fields["department"] = item.department
+        if item.role is not None:
+            fields["role"] = item.role
+        if item.password is not None:
+            fields["hash"] = hash_password(item.password)
+
+        if fields:
+            updateUser(item.username, **fields)
+            results["updated"].append(item.username)
+
+    # --- deletes ---
+    for uname in data.deletes:
+        target = getUserByUsername(uname)
+        if target is None:
+            results["errors"].append(f"User '{uname}' not found (delete)")
+            continue
+        if target["mode"] == "admin" and countAdmins() <= 1:
+            results["errors"].append(f"Cannot delete last admin '{uname}'")
+            continue
+        if uname.lower() == current_user.lower():
+            results["errors"].append("Cannot delete yourself")
+            continue
+        deleteUser(uname)
+        results["deleted"].append(uname)
+
+    return results
+
+
+# ──────────────────────────────────────────────
+#  Chat – send message (with optional file)
+# ──────────────────────────────────────────────
+@app.post("/chat")
+async def chat(
+    message: str = Form(...),
+    domain: str = Form("crm"),
+    role_context: str = Form("Analyst"),
+    file: UploadFile | None = File(None),
+    current_user: str = Depends(getUserFromToken),
+):
+    """Process a chat message and optionally attach a file for context."""
+    file_context = ""
+    if file:
+        content = await file.read()
         try:
-            return {
-                "users": [
-                    getUserDetails(search_username)
-                ]
-            }
-        except:
-            return {"detail": "User not found"}
+            file_context = f"\n\n[Attached file: {file.filename}]\n{content.decode('utf-8', errors='replace')[:5000]}"
+        except Exception:
+            file_context = f"\n\n[Attached file: {file.filename} (binary, preview unavailable)]"
+
+    prompt_text = message + file_context
+
+    inputs = {
+        "messages": [("user", prompt_text)],
+        "role": role_context,
+        "is_simulation": False,
+        "current_silo": domain,
+    }
+    result = await query_langgraph(**inputs)
+    return result
+
+
+# ──────────────────────────────────────────────
+#  Context – file upload for RAG / enrichment
+# ──────────────────────────────────────────────
+@app.post("/context/upload")
+async def uploadContext(
+    file: UploadFile = File(...),
+    current_user: str = Depends(getUserFromToken),
+):
+    """Accept a file upload to enrich the AI context.
+    For now, we acknowledge receipt; downstream RAG integration is TBD."""
+    content = await file.read()
+    size = len(content)
+    return {
+        "detail": f"File '{file.filename}' received ({size} bytes)",
+        "filename": file.filename,
+        "size": size,
+    }
+
+
+# ──────────────────────────────────────────────
+#  Integrations – Slack webhook
+# ──────────────────────────────────────────────
+@app.post("/integrations/slack/connect")
+async def connectSlack(
+    data: SlackConnectRequest,
+    current_user: str = Depends(admin_access_required),
+):
+    """Register a Slack webhook URL (stub — actual webhook posting is TBD)."""
+    return {"detail": "Slack webhook registered", "webhook_url": data.webhook_url}

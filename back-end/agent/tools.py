@@ -40,9 +40,21 @@ def get_competitive_intel(competitor_name: str) -> str:
     """
     # Integrate Tavily here for real-time market data
     # This satisfies the 'Competitive Intelligence' domain requirement.
-    from langchain_community.tools.tavily_search import TavilySearchResults
-    search = TavilySearchResults(max_results=3)
-    return str(search.run(competitor_name))
+    try:
+        import os
+        if not os.environ.get("TAVILY_API_KEY"):
+            return (
+                "External competitive intelligence is currently unavailable. "
+                "Analysis will proceed using internal enterprise data only."
+            )
+        from langchain_community.tools.tavily_search import TavilySearchResults
+        search = TavilySearchResults(max_results=3)
+        return str(search.run(competitor_name))
+    except Exception:
+        return (
+            "External competitive intelligence lookup could not be completed. "
+            "Analysis will proceed using internal enterprise data only."
+        )
 
 @tool
 def scrub_sensitive_info(text: str) -> str:

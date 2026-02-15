@@ -1,7 +1,7 @@
 """
 ICA – Home Page
 ===============
-Dashboard with insight cards + chatbot panel.
+Dashboard with insight cards + chatbot panel + context upload + Slack integration.
 This file is loaded by app.py via st.navigation().
 """
 
@@ -14,6 +14,15 @@ import time
 from datetime import datetime
 from theme import get_colors
 from streamlit_autorefresh import st_autorefresh
+from auth_utils import (
+    get_current_user,
+    init_context_state,
+    mock_upload_context,
+    init_slack_state,
+    mock_connect_slack,
+    get_user_domain,
+    get_user_role_context,
+)
 
 # ──────────────────────────────────────────────
 # Backend config
@@ -24,10 +33,6 @@ except Exception:
     BACKEND_BASE_URL = "http://localhost:8000"
 INSIGHTS_ENDPOINT = f"{BACKEND_BASE_URL}/insights"
 PROMPT_ENDPOINT = f"{BACKEND_BASE_URL}/prompt"
-
-# Domains and roles available (aligned with backend ALLOWED_SILOS)
-DOMAINS = ["Sales", "Operations", "HR", "Accounting", "CRM"]
-ROLES = ["CEO", "CFO", "COO", "CTO", "CMO", "CHRO", "VP Sales", "VP Engineering", "Analyst"]
 
 # ──────────────────────────────────────────────
 # Theme colours (for Python-level usage: Plotly charts, inline HTML)
@@ -51,6 +56,12 @@ PLOTLY_BG    = _c["PLOTLY_BG"]
 CHART_TEXT   = _c["CHART_TEXT"]
 CHART_GRID   = _c["CHART_GRID"]
 PANEL_SHADOW = _c["PANEL_SHADOW"]
+
+# ──────────────────────────────────────────────
+# Init extra state
+# ──────────────────────────────────────────────
+init_context_state()
+init_slack_state()
 
 # ──────────────────────────────────────────────
 # Page-specific CSS (content styling for home page)
@@ -86,7 +97,8 @@ div[data-testid="stAppViewContainer"] > section > div {{
 
 /* === PANEL BORDERS === */
 [data-testid="stVerticalBlock"].st-key-insights_panel,
-[data-testid="stVerticalBlock"].st-key-chat_panel {{
+[data-testid="stVerticalBlock"].st-key-chat_panel,
+[data-testid="stVerticalBlock"].st-key-slack_panel {{
     border: 3px solid {BORDER_STRONG} !important;
     border-radius: 16px !important;
     background: {CARD} !important;
@@ -269,14 +281,16 @@ div[data-testid="stAppViewContainer"] > section > div {{
 }}
 
 /* Primary button */
-button[data-testid="stBaseButton-primary"] {{
+button[data-testid="stBaseButton-primary"],
+button[data-testid="stBaseButton-primaryFormSubmit"] {{
     background: {ACCENT} !important;
     color: #ffffff !important;
     border: none !important;
     border-radius: 12px !important;
     font-weight: 600 !important;
 }}
-button[data-testid="stBaseButton-primary"]:hover {{
+button[data-testid="stBaseButton-primary"]:hover,
+button[data-testid="stBaseButton-primaryFormSubmit"]:hover {{
     opacity: 0.85 !important;
 }}
 
@@ -320,6 +334,86 @@ button[data-testid="stBaseButton-primary"]:hover {{
 [data-testid="stExpander"] summary span {{
     font-size: 0.78rem !important;
 }}
+
+/* === Floating file drop zone === */
+.st-key-file_drop_zone {{
+    background: {CARD_INNER} !important;
+    border: 1.5px dashed {BORDER} !important;
+    border-radius: 10px !important;
+    padding: 0.25rem 0.5rem !important;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.10) !important;
+    margin: 0.3rem 0 0.2rem 0 !important;
+}}
+.st-key-file_drop_zone [data-testid="stFileUploader"] {{
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+}}
+.st-key-file_drop_zone [data-testid="stFileUploader"] label {{
+    display: none !important;
+}}
+.st-key-file_drop_zone [data-testid="stFileUploader"] section {{
+    padding: 0.1rem 0 !important;
+}}
+.st-key-file_drop_zone [data-testid="stFileUploader"] section > div {{
+    padding-top: 0 !important;
+}}
+.st-key-file_drop_zone [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] {{
+    padding: 0.35rem 0.5rem !important;
+    min-height: unset !important;
+}}
+.st-key-file_drop_zone [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] span {{
+    font-size: 0.72rem !important;
+    color: {TEXT2} !important;
+}}
+.st-key-file_drop_zone [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] button {{
+    font-size: 0.72rem !important;
+    padding: 0.15rem 0.5rem !important;
+}}
+.st-key-file_drop_zone [data-testid="stFileUploader"] small {{
+    font-size: 0.6rem !important;
+    color: {TEXT2} !important;
+}}
+.st-key-file_drop_zone .drop-label {{
+    font-size: 0.72rem;
+    color: {TEXT2};
+    margin: 0 0 0.15rem 0;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+}}
+
+/* === Context upload badge === */
+.context-badge {{
+    display: inline-block;
+    background: {ACCENT_BG};
+    color: {ACCENT};
+    border-radius: 8px;
+    padding: 0.15rem 0.5rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    margin-bottom: 0.3rem;
+}}
+
+/* === Insight counter badge === */
+.insight-counter {{
+    display: inline-block;
+    background: {ACCENT};
+    color: #fff;
+    border-radius: 50%;
+    width: 22px;
+    height: 22px;
+    line-height: 22px;
+    text-align: center;
+    font-size: 0.7rem;
+    font-weight: 700;
+    margin-left: 0.3rem;
+    vertical-align: middle;
+}}
+/* Hide 'Press Enter to submit form' helper text */
+div[data-testid="InputInstructions"] {{
+    display: none !important;
+}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -328,18 +422,25 @@ button[data-testid="stBaseButton-primary"]:hover {{
 # ──────────────────────────────────────────────
 if "active_insights" not in st.session_state:
     st.session_state.active_insights = []
+if "seen_insight_ids" not in st.session_state:
+    st.session_state.seen_insight_ids = set()
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "selected_role" not in st.session_state:
-    st.session_state.selected_role = "CEO"
+    st.session_state.selected_role = get_user_role_context()
 if "selected_domain" not in st.session_state:
-    st.session_state.selected_domain = "Sales"
+    st.session_state.selected_domain = get_user_domain()
 if "last_insight_fetch" not in st.session_state:
     st.session_state.last_insight_fetch = 0.0
 if "insight_error" not in st.session_state:
     st.session_state.insight_error = None
+if "insight_consecutive_errors" not in st.session_state:
+    st.session_state.insight_consecutive_errors = 0
+if "chat_file_key" not in st.session_state:
+    st.session_state.chat_file_key = 0
 
-INSIGHT_REFRESH_INTERVAL = 10  # seconds
+INSIGHT_REFRESH_INTERVAL = 120  # seconds (avoid burning LLM tokens)
+MAX_BACKOFF_MULTIPLIER = 30   # max 5 min between retries on repeated errors
 
 # Auto-refresh the page to poll for new insights
 st_autorefresh(interval=INSIGHT_REFRESH_INTERVAL * 1000, limit=None, key="insight_autorefresh")
@@ -348,53 +449,161 @@ st_autorefresh(interval=INSIGHT_REFRESH_INTERVAL * 1000, limit=None, key="insigh
 # ──────────────────────────────────────────────
 # Helpers (backend integration)
 # ──────────────────────────────────────────────
+def _get_auth_headers() -> dict:
+    """Return headers with session-token for authenticated backend calls."""
+    token = st.session_state.get("auth_token")
+    if token:
+        return {"session-token": token}
+    return {}
+
+
 def fetch_insights(domain: str, role: str) -> list[dict]:
     """Fetch insights from backend POST /insights."""
     try:
         resp = requests.post(
             INSIGHTS_ENDPOINT,
             json={"domain": domain.lower(), "role_context": role},
+            headers=_get_auth_headers(),
             timeout=30,
         )
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            # Try to extract the backend's error detail
+            try:
+                err_data = resp.json()
+                detail = err_data.get("detail", resp.text)
+            except Exception:
+                detail = resp.text or f"HTTP {resp.status_code}"
+            # Detect rate-limit hints (backend now returns 429 directly)
+            if resp.status_code == 429 or "rate_limit" in str(detail).lower() or "429" in str(detail):
+                st.session_state.insight_error = (
+                    "⏳ Backend AI rate limit reached. Auto-retry will slow down. "
+                    "Please wait a few minutes."
+                )
+            else:
+                st.session_state.insight_error = f"Backend error ({resp.status_code}): {detail}"
+            st.session_state.insight_consecutive_errors += 1
+            return []
+
         data = resp.json()
-        # Backend may return a single insight dict or a list
-        if isinstance(data, dict):
+        # Successful fetch — reset error backoff
+        st.session_state.insight_consecutive_errors = 0
+
+        # Backend returns list of {timestamp, insight} dicts (new format)
+        if isinstance(data, list):
+            unwrapped = []
+            for item in data:
+                if isinstance(item, dict) and "insight" in item:
+                    inner = item["insight"]
+                    if isinstance(inner, dict):
+                        inner["_created_at"] = item.get("timestamp", "")
+                        # Skip "no_insight" status entries
+                        if inner.get("status") == "no_insight":
+                            continue
+                        unwrapped.append(inner)
+                elif isinstance(item, dict):
+                    if item.get("status") == "no_insight":
+                        continue
+                    unwrapped.append(item)
+            return unwrapped
+        elif isinstance(data, dict):
+            # Single insight or no_insight status
+            if data.get("status") == "no_insight":
+                return []
             return [data]
-        elif isinstance(data, list):
-            return data
         return []
     except requests.exceptions.ConnectionError:
         st.session_state.insight_error = "Backend not reachable. Start the backend server."
+        st.session_state.insight_consecutive_errors += 1
         return []
     except Exception as e:
         st.session_state.insight_error = f"Error fetching insights: {e}"
+        st.session_state.insight_consecutive_errors += 1
         return []
 
 
-def send_chat_message(message: str, domain: str, role: str) -> str:
-    """Send a prompt to backend POST /prompt and return the response text."""
+def accumulate_insights(new_insights: list[dict]):
+    """
+    Append new insights to st.session_state.active_insights,
+    deduplicating by insight_id. Keeps most recent version of each insight.
+    """
+    existing_ids = {i["insight_id"] for i in st.session_state.active_insights if "insight_id" in i}
+
+    for insight in new_insights:
+        iid = insight.get("insight_id")
+        if not iid:
+            # Generate a fallback ID from content hash
+            iid = str(hash(json.dumps(insight.get("content", {}), sort_keys=True)))
+            insight["insight_id"] = iid
+
+        if iid not in existing_ids:
+            st.session_state.active_insights.append(insight)
+            existing_ids.add(iid)
+            st.session_state.seen_insight_ids.add(iid)
+
+
+def send_chat_message(
+    message: str,
+    domain: str,
+    role: str,
+    attachment_name: str | None = None,
+    attachment_bytes: bytes | None = None,
+) -> str:
+    """
+    Send a prompt to backend.
+    - With attachment → POST /chat (multipart/form-data)
+    - Without attachment → POST /prompt (JSON)
+    """
     try:
-        resp = requests.post(
-            PROMPT_ENDPOINT,
-            json={"domain": domain.lower(), "role_context": role, "prompt": message},
-            timeout=60,
-        )
+        BACKEND_BASE = PROMPT_ENDPOINT.rsplit("/prompt", 1)[0]
+
+        if attachment_bytes and attachment_name:
+            # Use POST /chat with multipart form data
+            files = {"file": (attachment_name, attachment_bytes)}
+            form_data = {
+                "message": message,
+                "domain": domain.lower(),
+                "role_context": role,
+            }
+            resp = requests.post(
+                f"{BACKEND_BASE}/chat",
+                data=form_data,
+                files=files,
+                headers=_get_auth_headers(),
+                timeout=60,
+            )
+        else:
+            resp = requests.post(
+                PROMPT_ENDPOINT,
+                json={"domain": domain.lower(), "role_context": role, "prompt": message},
+                headers=_get_auth_headers(),
+                timeout=60,
+            )
         resp.raise_for_status()
         data = resp.json()
         # Backend returns insight JSON; extract chat_response or summary
         if isinstance(data, dict):
-            # Chat mode returns {"chat_response": "..."}
             if "chat_response" in data:
                 return data["chat_response"]
-            # Report mode returns full insight JSON — extract summary
             content = data.get("content", {})
             if isinstance(content, dict) and content.get("summary"):
                 return content["summary"]
+            # If there's a message field (e.g. no_insight), use that
+            if data.get("message"):
+                return data["message"]
             return json.dumps(data, indent=2)
         return str(data)
     except requests.exceptions.ConnectionError:
         return "Backend not reachable. Please start the backend server."
+    except requests.exceptions.HTTPError as e:
+        # Handle specific HTTP error codes gracefully
+        status = e.response.status_code if e.response is not None else 0
+        if status == 429:
+            return "⏳ AI rate limit reached. Please wait a minute and try again."
+        try:
+            detail = e.response.json().get("detail", str(e))
+        except Exception:
+            detail = str(e)
+        return f"Error ({status}): {detail}"
     except Exception as e:
         return f"Error: {e}"
 
@@ -442,27 +651,28 @@ def render_plotly(visuals: dict, key: str):
 
 
 # ──────────────────────────────────────────────
-# TOP BAR – ICA + Role/Domain selectors + Light/Dark toggle
+# TOP BAR – ICA + user info + Light/Dark toggle
+# (Domain & role are fixed per user profile)
 # ──────────────────────────────────────────────
-top_brand, top_domain, top_role, top_toggle = st.columns([3, 2, 2, 2])
+current_user = get_current_user()
+user_greeting = ""
+if current_user:
+    user_greeting = f"  ·  Welcome, {current_user.get('display_name', current_user['username'])}"
+
+# Fixed domain/role from user profile
+st.session_state.selected_domain = get_user_domain()
+st.session_state.selected_role = get_user_role_context()
+
+top_brand, _, top_toggle = st.columns([6, 3, 2])
 with top_brand:
-    st.markdown(f'<div class="topbar-brand">🔬 Intelligent Consultant Agent</div>', unsafe_allow_html=True)
-with top_domain:
-    domain_idx = DOMAINS.index(st.session_state.selected_domain) if st.session_state.selected_domain in DOMAINS else 0
-    new_domain = st.selectbox("Domain", DOMAINS, index=domain_idx, key="domain_select", label_visibility="collapsed")
-    if new_domain != st.session_state.selected_domain:
-        st.session_state.selected_domain = new_domain
-        st.session_state.active_insights = []
-        st.session_state.last_insight_fetch = 0.0
-        st.rerun()
-with top_role:
-    role_idx = ROLES.index(st.session_state.selected_role) if st.session_state.selected_role in ROLES else 0
-    new_role = st.selectbox("Role", ROLES, index=role_idx, key="role_select", label_visibility="collapsed")
-    if new_role != st.session_state.selected_role:
-        st.session_state.selected_role = new_role
-        st.session_state.active_insights = []
-        st.session_state.last_insight_fetch = 0.0
-        st.rerun()
+    dept_label = current_user.get("department", "") if current_user else ""
+    role_label = st.session_state.selected_role
+    st.markdown(
+        f'<div class="topbar-brand">🔬 Intelligent Consultant Agent'
+        f'<span style="font-size:0.95rem;color:{TEXT2};font-weight:400;opacity:0.85;margin-left:0.4rem;">{user_greeting}'
+        f' · {dept_label} · {role_label}</span></div>',
+        unsafe_allow_html=True,
+    )
 with top_toggle:
     toggled = st.toggle("Dark Mode", value=st.session_state.dark_mode, key="theme_toggle")
     if toggled != st.session_state.dark_mode:
@@ -470,14 +680,17 @@ with top_toggle:
         st.rerun()
 
 # ──────────────────────────────────────────────
-# Auto-refresh insights every INSIGHT_REFRESH_INTERVAL seconds
+# Auto-refresh insights — ACCUMULATE, don't overwrite
 # ──────────────────────────────────────────────
 now = time.time()
-if now - st.session_state.last_insight_fetch >= INSIGHT_REFRESH_INTERVAL:
+# Exponential backoff: on repeated errors, wait longer between retries
+_err_count = st.session_state.insight_consecutive_errors
+_backoff = min(_err_count, MAX_BACKOFF_MULTIPLIER) * INSIGHT_REFRESH_INTERVAL if _err_count else INSIGHT_REFRESH_INTERVAL
+if now - st.session_state.last_insight_fetch >= _backoff:
     st.session_state.insight_error = None
     fresh = fetch_insights(st.session_state.selected_domain, st.session_state.selected_role)
     if fresh:
-        st.session_state.active_insights = fresh
+        accumulate_insights(fresh)  # ← key change: append + deduplicate
     st.session_state.last_insight_fetch = now
 
 # ──────────────────────────────────────────────
@@ -490,6 +703,14 @@ with main_col:
     panel = st.container(border=True, key="insights_panel")
     with panel:
         insights = st.session_state.active_insights
+        count = len(insights)
+
+        # Header with counter
+        st.markdown(
+            f'<div class="panel-header">📊 Active Insights'
+            f'<span class="insight-counter">{count}</span></div>',
+            unsafe_allow_html=True,
+        )
 
         # Show error banner if backend unreachable
         if st.session_state.insight_error:
@@ -499,7 +720,7 @@ with main_col:
             if not st.session_state.insight_error:
                 st.info(f"Fetching insights for **{st.session_state.selected_domain}** as **{st.session_state.selected_role}**…")
         else:
-            scroll = st.container(height=560)
+            scroll = st.container(height=520)
             with scroll:
                 # Backend may return a single insight — always iterate as list
                 for row_start in range(0, len(insights), 2):
@@ -519,13 +740,32 @@ with main_col:
                                 urg_lbl = "High" if urgency >= 0.8 else ("Med" if urgency >= 0.5 else "Low")
                                 conf = int(meta.get("confidence_score", 0) * 100)
 
+                                gen_time = insight.get("_created_at", "") or meta.get("generated_at", "")
+                                domain_tag = meta.get("domain", st.session_state.selected_domain)
+
+                                # Format timestamp for display
+                                time_display = ""
+                                if gen_time:
+                                    try:
+                                        from datetime import datetime
+                                        if "T" in str(gen_time):
+                                            dt = datetime.fromisoformat(str(gen_time).replace("Z", "+00:00"))
+                                        else:
+                                            dt = datetime.strptime(str(gen_time)[:19], "%Y-%m-%d %H:%M:%S")
+                                        time_display = dt.strftime("%b %d, %I:%M %p")
+                                    except Exception:
+                                        time_display = str(gen_time)[:16]
+
                                 # Top row: meta tags + dismiss button (top-right)
                                 meta_col, dismiss_col = st.columns([5, 1])
                                 with meta_col:
+                                    time_html = f'<span class="meta-tag">🕐 {time_display}</span>' if time_display else ""
                                     st.markdown(f"""
                                     <div style="margin-bottom:0.3rem;">
                                         <span class="meta-tag {urg_cls}">{urg_lbl}</span>
                                         <span class="meta-tag">🎯 {conf}%</span>
+                                        <span class="meta-tag">{domain_tag}</span>
+                                        {time_html}
                                     </div>
                                     """, unsafe_allow_html=True)
                                 with dismiss_col:
@@ -556,28 +796,80 @@ with main_col:
                                         for step in chain:
                                             st.markdown(f"**{step['step']}.** *{step['agent']}* – {step['thought']}")
 
+    # ── Session Stats (below insights) ──
+    with st.container(border=True, key="slack_panel"):
+        stats_col_full = st.columns([1])[0]
 
-# ── RIGHT: Chatbot panel ──
+        # — Slack Integration — (commented out for now)
+        # with slack_col:
+        #     st.markdown(f'<div class="panel-header">💬 Slack Integration</div>', unsafe_allow_html=True)
+        #
+        #     if st.session_state.slack_connected:
+        #         cfg = st.session_state.slack_config
+        #         st.success(f"Connected to {cfg['channel']} since {cfg['connected_at']}")
+        #         if st.button("Disconnect", key="slack_disconnect_btn"):
+        #             st.session_state.slack_connected = False
+        #             st.session_state.slack_config = None
+        #             st.rerun()
+        #     else:
+        #         with st.form("slack_form"):
+        #             s_c1, s_c2, s_c3 = st.columns(3)
+        #             with s_c1:
+        #                 webhook = st.text_input("Webhook URL", placeholder="https://hooks.slack.com/services/...", key="slack_webhook")
+        #             with s_c2:
+        #                 channel = st.text_input("Channel", value="#insights", key="slack_channel")
+        #             with s_c3:
+        #                 notify = st.selectbox("Notify on", ["high_urgency", "all"], key="slack_notify")
+        #             slack_submit = st.form_submit_button("Connect Slack", type="primary")
+        #
+        #             if slack_submit:
+        #                 if webhook.strip():
+        #                     mock_connect_slack(webhook.strip(), channel.strip(), notify)
+        #                     st.toast("Slack connected!", icon="✅")
+        #                     st.rerun()
+        #                 else:
+        #                     st.error("Webhook URL required.")
+
+        # — Quick Stats —
+        with stats_col_full:
+            st.markdown(f'<div class="panel-header">📈 Session Stats</div>', unsafe_allow_html=True)
+            st.markdown(f"""
+            <div style="font-size:0.8rem;line-height:2;color:{TEXT2};">
+                Insights collected: <b style="color:{ACCENT};">{len(st.session_state.active_insights)}</b><br>
+                Files uploaded: <b style="color:{ACCENT};">{len(st.session_state.uploaded_files)}</b><br>
+                Chat messages: <b style="color:{ACCENT};">{len(st.session_state.chat_history)}</b>
+            </div>
+            """, unsafe_allow_html=True)
+
+
+# ── RIGHT: Chatbot panel with integrated file attachment ──
 with chat_col:
     chat_panel = st.container(border=True, key="chat_panel")
     with chat_panel:
         st.markdown(f'<div class="panel-header">💬 Chatbot</div>', unsafe_allow_html=True)
 
-        chat_box = st.container(height=420)
+        chat_box = st.container(height=380)
         with chat_box:
             if not st.session_state.chat_history:
                 st.markdown("""
                 <div class="chat-bubble assistant">
                     Hi! I'm your AI assistant. Ask me anything about your business data.
+                    You can also attach a PDF or CSV for context.
                 </div>
                 """, unsafe_allow_html=True)
 
             for msg in st.session_state.chat_history:
                 cls = "user" if msg["role"] == "user" else "assistant"
                 ico = "👤" if msg["role"] == "user" else "🤖"
+                attachment_badge = ""
+                if msg.get("attachment"):
+                    attachment_badge = (
+                        f'<span class="context-badge" style="margin-left:0.3rem;">'
+                        f'📎 {msg["attachment"]}</span>'
+                    )
                 st.markdown(f"""
                 <div class="chat-bubble {cls}">
-                    {ico} {msg["content"]}
+                    {ico} {msg["content"]}{attachment_badge}
                     <div class="chat-time">{msg.get("time", "")}</div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -607,14 +899,80 @@ with chat_col:
             </script>
             """, height=0, scrolling=False)
 
+        # ── Floating file drop zone ──
+        _MAX_FILE_MB = 200
+        _upload_key = f"chat_attachment_{st.session_state.chat_file_key}"
+
+        with st.container(key="file_drop_zone"):
+            st.markdown(
+                '<p class="drop-label">📎 Drop or browse &middot; '
+                '<b>.pdf / .csv</b> &middot; max 200 MB</p>',
+                unsafe_allow_html=True,
+            )
+            _raw_file = st.file_uploader(
+                "Attach file",
+                type=["pdf", "csv"],
+                key=_upload_key,
+                label_visibility="collapsed",
+            )
+
+        # Validate the uploaded file
+        chat_attachment = None
+        if _raw_file is not None:
+            _ext = _raw_file.name.rsplit(".", 1)[-1].lower() if "." in _raw_file.name else ""
+            _size_mb = _raw_file.size / (1024 * 1024)
+            if _ext not in ("pdf", "csv"):
+                st.toast(f"❌ Unsupported file type '.{_ext}'. Only PDF and CSV are accepted.", icon="🚫")
+            elif _size_mb > _MAX_FILE_MB:
+                st.toast(f"❌ File too large ({_size_mb:.1f} MB). Maximum is {_MAX_FILE_MB} MB.", icon="🚫")
+            else:
+                chat_attachment = _raw_file
+                st.markdown(
+                    f'<span class="context-badge" style="margin:0;">📎 {chat_attachment.name} '
+                    f'({round(chat_attachment.size / 1024, 1)} KB)</span>',
+                    unsafe_allow_html=True,
+                )
+
         user_input = st.chat_input("Ask anything...", key="chat_input")
         if user_input:
             now_str = datetime.now().strftime("%I:%M %p")
-            st.session_state.chat_history.append({"role": "user", "content": user_input, "time": now_str})
+
+            # Capture attachment before clearing
+            attachment_name = None
+            attachment_bytes = None
+            if chat_attachment:
+                attachment_name = chat_attachment.name
+                attachment_bytes = chat_attachment.read()
+                # Also record in uploaded_files for session stats
+                mock_upload_context(
+                    file_name=attachment_name,
+                    file_bytes=attachment_bytes,
+                    domain=st.session_state.selected_domain,
+                    description=f"Chat attachment: {user_input[:60]}",
+                )
+
+            # Add user message to history
+            st.session_state.chat_history.append({
+                "role": "user",
+                "content": user_input,
+                "time": now_str,
+                "attachment": attachment_name,
+            })
+
+            # Send to backend (with attachment info if present)
             response = send_chat_message(
                 user_input,
                 st.session_state.selected_domain,
                 st.session_state.selected_role,
+                attachment_name=attachment_name,
+                attachment_bytes=attachment_bytes,
             )
-            st.session_state.chat_history.append({"role": "assistant", "content": response, "time": now_str})
+            st.session_state.chat_history.append({
+                "role": "assistant",
+                "content": response,
+                "time": now_str,
+            })
+
+            # Clear the file uploader by incrementing its key
+            st.session_state.chat_file_key += 1
             st.rerun()

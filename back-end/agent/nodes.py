@@ -1890,14 +1890,14 @@ def reasoner_node(state: AgentState):
         if isinstance(latency, (int, float)) and isinstance(leads_baseline, (int, float)) and isinstance(leads_current, (int, float)):
             lead_drop_pct = ((leads_baseline - leads_current) / leads_baseline * 100.0) if leads_baseline else 0.0
             response_text = (
-                f"Ahmed, external intel first: {competitor_summary} "
+                f"Based on external and internal intel: {competitor_summary} "
                 f"Compared with our internal baseline, latency is currently {latency:.0f}ms, and active leads moved from "
                 f"{leads_baseline:.0f} to {leads_current:.0f}. A sub-50ms competitor could plausibly absorb about {lead_drop_pct:.1f}% "
                 "of this lead decline if we do not close the performance gap."
             )
         else:
             response_text = (
-                f"Ahmed, external intel first: {competitor_summary} "
+                f"Based on external and internal intel: {competitor_summary} "
                 "Our internal data is incomplete for a full quantified comparison, but we should benchmark latency and lead conversion "
                 "against competitor speed before committing to pricing or pipeline targets."
             )
