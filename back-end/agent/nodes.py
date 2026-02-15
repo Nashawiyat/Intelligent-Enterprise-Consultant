@@ -1,7 +1,10 @@
 from langchain_core.messages import SystemMessage
 from langchain_groq import ChatGroq
 from .state import AgentState
-from .tools import query_enterprise_database, get_competitive_intel, get_database_schema
+from .tools import (
+    query_enterprise_database, get_competitive_intel, get_database_schema,
+    query_simulation_db, get_simulation_schema,
+)
 import ast
 import re
 import json
@@ -13,6 +16,24 @@ tools = [query_enterprise_database, get_competitive_intel, get_database_schema]
 llm_with_tools = llm_fast.bind_tools(tools)
 
 ALLOWED_SILOS = ["Sales", "Operations", "HR", "Accounting", "CRM"]
+
+# Columns that are IDs, foreign keys, or boolean flags — never treat as business metrics
+_ID_FK_SUFFIXES = ("id", "ibancode")
+_ID_FK_EXACT = {
+    "isactive", "wascancelled", "currentproductversion",
+    "quantityrequired", "minquantity", "discount",
+}
+
+def _is_id_or_fk_column(col_name: str) -> bool:
+    """Return True if the column is an ID, FK, or boolean flag (not a business metric)."""
+    lower = col_name.lower().strip()
+    if lower in _ID_FK_EXACT:
+        return True
+    if lower.endswith("id") and len(lower) > 2:
+        return True
+    if lower == "id":
+        return True
+    return False
 SILO_INSTRUCTIONS = {
     "Sales": "Focus on pipeline, conversion, CAC, and LTV.",
     "Operations": "Focus on latency, throughput, uptime, and bottleneck.",
@@ -323,77 +344,60 @@ def build_fix_response_from_anomaly(anomaly: dict, user_role: str) -> str:
 
 def build_value_reference_explanation(history: list[dict], user_role: str) -> str:
     sheet = get_effective_fact_sheet({}, history)
-    tables = sheet.get("tables", {}) if isinstance(sheet, dict) else {}
-
-    accounting_fields = tables.get("erp_accounting", {}).get("fields", {}) if isinstance(tables, dict) else {}
-    revenue = accounting_fields.get("revenue", {}) if isinstance(accounting_fields, dict) else {}
-    rev_baseline = revenue.get("baseline") if isinstance(revenue, dict) else None
-    rev_current = revenue.get("current") if isinstance(revenue, dict) else None
-
-    ops_fields = tables.get("erp_operations", {}).get("fields", {}) if isinstance(tables, dict) else {}
-    latency = ops_fields.get("latency_ms", {}) if isinstance(ops_fields, dict) else {}
-    lat_baseline = latency.get("baseline") if isinstance(latency, dict) else None
-    lat_current = latency.get("current") if isinstance(latency, dict) else None
-
-    crm_fields = tables.get("crm", {}).get("fields", {}) if isinstance(tables, dict) else {}
-    leads = crm_fields.get("active_leads", {}) if isinstance(crm_fields, dict) else {}
-    leads_baseline = leads.get("baseline") if isinstance(leads, dict) else None
-    leads_current = leads.get("current") if isinstance(leads, dict) else None
-
-    if isinstance(rev_baseline, (int, float)) and isinstance(rev_current, (int, float)):
-        revenue_gap = rev_baseline - rev_current
-        rev_drop_pct = ((rev_baseline - rev_current) / rev_baseline * 100.0) if rev_baseline else 0.0
-        details = (
-            f"Our income dropped by ${revenue_gap:,.0f} this week. "
-            f"That is the revenue gap between normal performance (${rev_baseline:,.0f}) and the current crisis level (${rev_current:,.0f}), "
-            f"which is a {rev_drop_pct:.1f}% decline."
+    candidates = collect_metric_candidates(sheet)
+    if not candidates:
+        return (
+            f"Using our existing investigation trail, {user_role}, the cash flow impact is the lost opportunity between baseline performance "
+            "and what we are achieving right now."
         )
-        if isinstance(lat_baseline, (int, float)) and isinstance(lat_current, (int, float)):
-            details += (
-                f" We also saw service delays rise from {lat_baseline:.0f}ms to {lat_current:.0f}ms, "
-                "which reduced our ability to convert demand into revenue."
-            )
-        if isinstance(leads_baseline, (int, float)) and isinstance(leads_current, (int, float)) and leads_baseline:
-            lead_drop_pct = ((leads_baseline - leads_current) / leads_baseline) * 100.0
-            details += (
-                f" In the same period, incoming demand fell from {leads_baseline:,.0f} to {leads_current:,.0f} "
-                f"({lead_drop_pct:.1f}% down), reinforcing the lost-opportunity effect."
-            )
-        return details
+    ranked = sorted(candidates, key=lambda c: c["abs_change"], reverse=True)
+    primary = ranked[0]
+    p_label = format_metric_label(primary["field_name"])
+    p_silo  = table_to_silo(primary["table_name"])
+    gap = primary["baseline"] - primary["current"]
+    drop_pct = primary.get("delta_pct", 0.0)
 
-    return (
-        f"Using our existing investigation trail, {user_role}, the cash flow impact is the lost opportunity between baseline performance "
-        "and what we are achieving right now."
+    details = (
+        f"{p_label} in {p_silo} shifted by ${abs(gap):,.0f} this week — "
+        f"from ${primary['baseline']:,.0f} (baseline) to ${primary['current']:,.0f} (current), "
+        f"a {abs(drop_pct):.1f}% {'decline' if gap > 0 else 'increase'}."
     )
+    if len(ranked) > 1:
+        sec = ranked[1]
+        s_label = format_metric_label(sec["field_name"])
+        s_silo  = table_to_silo(sec["table_name"])
+        details += (
+            f" In the same window, {s_label} in {s_silo} moved from "
+            f"{sec['baseline']:,.2f} to {sec['current']:,.2f} ({sec['delta_pct']:+.1f}%), "
+            "reinforcing the cross-silo propagation."
+        )
+    return details
 
 def build_why_cross_silo_followup(history: list[dict], user_role: str) -> tuple[str, str | None]:
     sheet = get_effective_fact_sheet({}, history)
-    tables = sheet.get("tables", {}) if isinstance(sheet, dict) else {}
+    candidates = collect_metric_candidates(sheet)
 
-    accounting_fields = tables.get("erp_accounting", {}).get("fields", {}) if isinstance(tables, dict) else {}
-    revenue = accounting_fields.get("revenue", {}) if isinstance(accounting_fields, dict) else {}
-    rev_baseline = revenue.get("baseline") if isinstance(revenue, dict) else None
-    rev_current = revenue.get("current") if isinstance(revenue, dict) else None
-
-    ops_fields = tables.get("erp_operations", {}).get("fields", {}) if isinstance(tables, dict) else {}
-    latency = ops_fields.get("latency_ms", {}) if isinstance(ops_fields, dict) else {}
-    lat_baseline = latency.get("baseline") if isinstance(latency, dict) else None
-    lat_current = latency.get("current") if isinstance(latency, dict) else None
-
-    if all(isinstance(v, (int, float)) for v in [rev_baseline, rev_current, lat_baseline, lat_current]):
-        revenue_gap = rev_baseline - rev_current
+    if len(candidates) >= 2:
+        ranked = sorted(candidates, key=lambda c: c["abs_change"], reverse=True)
+        primary = ranked[0]
+        secondary = ranked[1]
+        p_label = format_metric_label(primary["field_name"])
+        p_silo  = table_to_silo(primary["table_name"])
+        s_label = format_metric_label(secondary["field_name"])
+        s_silo  = table_to_silo(secondary["table_name"])
+        gap = abs(primary["current"] - primary["baseline"])
         message = (
-            f"Why this happened: accounting shows an income shortfall of ${revenue_gap:,.0f} versus baseline. "
-            f"In the prior investigation turn, operations latency climbed from {lat_baseline:.0f}ms to {lat_current:.0f}ms. "
-            "That slowdown created a lost-opportunity path: slower experience, fewer completed transactions, and then lower revenue."
+            f"Why this happened: {p_label} in {p_silo} shifted by ${gap:,.0f} versus baseline "
+            f"({primary['delta_pct']:+.1f}%). This correlates with {s_label} in {s_silo} moving "
+            f"{secondary['delta_pct']:+.1f}%, creating a cross-silo chain of disruption."
         )
-        return message, "Operations"
+        return message, p_silo
 
     anomaly = find_largest_anomaly(sheet)
     if anomaly:
         silo = table_to_silo(anomaly.get("table", ""))
         return (
-            f"The main reason is the largest disruption in {silo}, which then propagated into accounting performance in later metrics.",
+            f"The main reason is the largest disruption in {silo}, which then propagated across silos.",
             silo,
         )
 
@@ -709,23 +713,43 @@ def parse_llm_json(text: str) -> dict | None:
 
 def table_to_silo(table_name: str) -> str:
     name = (table_name or "").lower()
+    # Summary tables (seeded anomaly data)
+    if name in ("dailysalessummary",):
+        return "Sales"
+    if name in ("dailyfinancialsummary",):
+        return "Accounting"
+    if name in ("dailyoperationssummary",):
+        return "Operations"
+    if name in ("dailyhrsummary",):
+        return "HR"
+    if name in ("dailycrmsummary",):
+        return "CRM"
+    # Legacy / original tables
     if "erp_operations" in name or "operation" in name or "it" in name:
         return "Operations"
-    if "erp_accounting" in name or "account" in name or "finance" in name:
+    if "erp_accounting" in name or "account" in name or "finance" in name or "transaction" in name or "bank" in name:
         return "Accounting"
-    if "crm" in name or "marketing" in name:
+    if "crm" in name or "marketing" in name or name in ("leads", "interactions"):
         return "CRM"
-    if "sales" in name:
+    if "sales" in name or name in ("corders", "customers", "customerdiscount", "products", "pricehistory", "quantitydiscounts"):
         return "Sales"
-    if "hr" in name:
+    if "hr" in name or name in ("employee", "department"):
         return "HR"
+    if name in ("supplier", "components", "porders", "productcomponents", "productionorder"):
+        return "Operations"
     return "Operations"
 
 def format_metric_label(field_name: str) -> str:
     label = str(field_name or "").replace("_", " ").strip()
     return " ".join(word.capitalize() for word in label.split()) or "Metric"
 
-def collect_metric_candidates(fact_sheet: dict) -> list[dict]:
+def _is_summary_table(table_name: str) -> bool:
+    """Return True if the table is a pre-aggregated daily summary table."""
+    lower = (table_name or "").lower()
+    return lower.startswith("daily") and "summary" in lower
+
+
+def collect_metric_candidates(fact_sheet: dict, *, prefer_summary: bool = True) -> list[dict]:
     tables = fact_sheet.get("tables", {}) if isinstance(fact_sheet, dict) else {}
     candidates = []
     for table_name, table in tables.items():
@@ -745,8 +769,12 @@ def collect_metric_candidates(fact_sheet: dict) -> list[dict]:
                 "current": current,
                 "delta_pct": delta_pct,
                 "abs_delta": abs(delta_pct),
-                "abs_change": abs(current - baseline)
+                "abs_change": abs(current - baseline),
+                "is_summary": _is_summary_table(table_name),
             })
+    # When summary tables exist and caller wants them, filter out raw tables
+    if prefer_summary and any(c["is_summary"] for c in candidates):
+        candidates = [c for c in candidates if c["is_summary"]]
     return candidates
 
 def semantic_sweep_fields(fact_sheet: dict) -> dict:
@@ -999,48 +1027,46 @@ def get_field_values(fact_sheet: dict, keys: list[str]) -> dict | None:
     }
 
 def build_reasoning_from_fact_sheet(fact_sheet: dict, user_role: str) -> dict:
+    """Build a reasoning dict entirely from the dynamic fact_sheet — no hardcoded field names."""
     tables = fact_sheet.get("tables", {}) if isinstance(fact_sheet, dict) else {}
-    accounting = tables.get("erp_accounting", {}) if isinstance(tables, dict) else {}
-    accounting_fields = accounting.get("fields", {}) if isinstance(accounting, dict) else {}
-    revenue_values = accounting_fields.get("revenue", {}) if isinstance(accounting_fields, dict) else {}
+    candidates = collect_metric_candidates(fact_sheet)
 
-    actual_revenue = revenue_values.get("current", 0.0)
-    baseline_revenue = revenue_values.get("baseline", 0.0)
-    if not isinstance(actual_revenue, (int, float)):
-        actual_revenue = 0.0
-    if not isinstance(baseline_revenue, (int, float)):
-        baseline_revenue = 0.0
+    # ── Dynamically find the best revenue / income field ──
+    _revenue_keys = ["total_revenue", "revenue", "total_income", "net_cash_flow", "total_profit", "profit",
+                     "grossamount", "netamount", "finalPrice"]
+    revenue_candidate = None
+    for c in sorted(candidates, key=lambda x: x["abs_change"], reverse=True):
+        if any(k in c["field_name"].lower() for k in _revenue_keys):
+            revenue_candidate = c
+            break
+    if revenue_candidate is None and candidates:
+        # Fall back to biggest absolute-change candidate
+        revenue_candidate = max(candidates, key=lambda x: x["abs_change"])
+
+    # ── Dynamically find the best expenditure / cost field ──
+    _expense_keys = ["expenditure", "total_expenses", "total_payroll", "costperunit", "laborcost",
+                     "overheadcost", "outstanding_receivables"]
+    expense_candidate = None
+    for c in sorted(candidates, key=lambda x: x["abs_change"], reverse=True):
+        if any(k in c["field_name"].lower() for k in _expense_keys) and c is not revenue_candidate:
+            expense_candidate = c
+            break
+
+    # Extract values
+    actual_revenue  = revenue_candidate["current"]  if revenue_candidate else 0.0
+    baseline_revenue = revenue_candidate["baseline"] if revenue_candidate else 0.0
     cash_flow_impact = actual_revenue - baseline_revenue
 
     expenditure_delta = 0.0
-    expenditure_values = accounting_fields.get("expenditure", {}) if isinstance(accounting_fields, dict) else {}
-    exp_current = expenditure_values.get("current") if isinstance(expenditure_values, dict) else None
-    exp_baseline = expenditure_values.get("baseline") if isinstance(expenditure_values, dict) else None
-    if isinstance(exp_current, (int, float)) and isinstance(exp_baseline, (int, float)):
-        expenditure_delta = exp_current - exp_baseline
-    else:
-        hr = tables.get("erp_hr", {}) if isinstance(tables, dict) else {}
-        hr_fields = hr.get("fields", {}) if isinstance(hr, dict) else {}
-        payroll_values = hr_fields.get("payroll_expenditure", {}) if isinstance(hr_fields, dict) else {}
-        payroll_current = payroll_values.get("current") if isinstance(payroll_values, dict) else None
-        payroll_baseline = payroll_values.get("baseline") if isinstance(payroll_values, dict) else None
-        if isinstance(payroll_current, (int, float)) and isinstance(payroll_baseline, (int, float)):
-            expenditure_delta = payroll_current - payroll_baseline
-
-    variable_mapping = {
-        "ACTUAL_REVENUE": actual_revenue,
-        "BASELINE_REVENUE": baseline_revenue,
-        "CASH_FLOW_IMPACT": cash_flow_impact,
-        "REVENUE_TABLE": "erp_accounting",
-        "REVENUE_FIELD": "revenue",
-        "EXPENDITURE_TABLE": "erp_accounting" if isinstance(exp_current, (int, float)) else "erp_hr",
-        "EXPENDITURE_FIELD": "expenditure" if isinstance(exp_current, (int, float)) else "payroll_expenditure"
-    }
+    exp_baseline = None
+    if expense_candidate:
+        expenditure_delta = expense_candidate["current"] - expense_candidate["baseline"]
+        exp_baseline = expense_candidate["baseline"]
 
     primary, secondary = select_trace_fields(fact_sheet, user_role, map_tables_to_silos(fact_sheet))
     head = build_headline_from_traces(primary, secondary)
 
-    # When no data is available, produce a meaningful fallback instead of $0/Metric placeholders
+    # When no data is available, produce a meaningful fallback
     if primary is None and secondary is None:
         return {
             "headline": head,
@@ -1060,46 +1086,57 @@ def build_reasoning_from_fact_sheet(fact_sheet: dict, user_role: str) -> dict:
 
     summary_parts = []
     if primary and isinstance(primary.get("baseline"), (int, float)) and isinstance(primary.get("current"), (int, float)):
+        p_label = format_metric_label(primary['field_name'])
+        p_silo  = table_to_silo(primary['table_name'])
         summary_parts.append(
-            f"{format_metric_label(primary['field_name'])} moved from {primary['baseline']} to {primary['current']}."
+            f"{p_label} in {p_silo} moved from {primary['baseline']:,.2f} to {primary['current']:,.2f} "
+            f"({primary['delta_pct']:+.1f}%)."
         )
     if secondary and isinstance(secondary.get("baseline"), (int, float)) and isinstance(secondary.get("current"), (int, float)):
+        s_label = format_metric_label(secondary['field_name'])
+        s_silo  = table_to_silo(secondary['table_name'])
         summary_parts.append(
-            f"{format_metric_label(secondary['field_name'])} moved from {secondary['baseline']} to {secondary['current']}."
+            f"{s_label} in {s_silo} moved from {secondary['baseline']:,.2f} to {secondary['current']:,.2f} "
+            f"({secondary['delta_pct']:+.1f}%)."
         )
     summary = " ".join(summary_parts) or "Review of baseline vs current metrics across available tables."
 
-    ops_silo = table_to_silo(primary["table_name"]) if primary else "Operations"
-    fin_silo = table_to_silo(secondary["table_name"]) if secondary else "Accounting"
+    ops_silo  = table_to_silo(primary["table_name"]) if primary else "Operations"
+    fin_silo  = table_to_silo(secondary["table_name"]) if secondary else "Accounting"
     ops_metric = format_metric_label(primary["field_name"]) if primary else "Metric"
     fin_metric = format_metric_label(secondary["field_name"]) if secondary else "Metric"
+
     reasoning = (
-        f"Total Expenditure changed by ${abs(expenditure_delta):.0f} due to {ops_silo} bottleneck. "
-        f"The {ops_metric} spike in {ops_silo} is the root cause of the {fin_metric} drop in {fin_silo}. "
-        f"Impact on Cash Flow: ${abs(variable_mapping['CASH_FLOW_IMPACT']):.0f}. "
-        f"Estimated Expenditure: ${abs(expenditure_delta):.0f}."
+        f"{ops_metric} in {ops_silo} shifted from {primary['baseline']:,.2f} to {primary['current']:,.2f} "
+        f"({primary['delta_pct']:+.1f}%), directly correlating with {fin_metric} in {fin_silo} "
+        f"moving from {secondary['baseline']:,.2f} to {secondary['current']:,.2f} ({secondary['delta_pct']:+.1f}%). "
+        f"Impact on Cash Flow: ${abs(cash_flow_impact):,.0f}. "
+        f"Expenditure change: ${abs(expenditure_delta):,.0f}."
+    ) if primary and secondary else (
+        f"Impact on Cash Flow: ${abs(cash_flow_impact):,.0f}. "
+        f"Expenditure change: ${abs(expenditure_delta):,.0f}."
     )
 
-    abs_delta_dollars = abs(variable_mapping["CASH_FLOW_IMPACT"])
-    abs_delta_percent = 0.0
+    abs_delta_pct = 0.0
     if baseline_revenue:
-        abs_delta_percent = abs((variable_mapping["CASH_FLOW_IMPACT"] / baseline_revenue) * 100)
-    recovery_ratio = max(0.0, min(1.0, abs_delta_percent / 100.0))
-    estimated_recovery = abs_delta_dollars * recovery_ratio
+        abs_delta_pct = abs((cash_flow_impact / baseline_revenue) * 100)
+    recovery_ratio = max(0.0, min(1.0, abs_delta_pct / 100.0))
+    estimated_recovery = abs(cash_flow_impact) * recovery_ratio
     recovery_pct = recovery_ratio * 100.0
     expenditure_reduction_pct = 0.0
     if isinstance(exp_baseline, (int, float)) and exp_baseline != 0:
         expenditure_reduction_pct = abs((expenditure_delta / exp_baseline) * 100)
+
     recommendations = [
         {
-            "action": "Validate root cause",
-            "detail": f"Investigate {ops_silo} drivers behind {ops_metric} changes.",
-            "expected_impact": f"Estimated {recovery_pct:.1f}% recovery of cash flow with projected ${estimated_recovery:.0f} monthly revenue recovery."
+            "action": f"Investigate {ops_silo} root cause",
+            "detail": f"Deep-dive into {ops_metric} changes in {ops_silo} and their downstream impact on {fin_silo}.",
+            "expected_impact": f"Estimated {recovery_pct:.1f}% recovery of cash flow with projected ${estimated_recovery:,.0f} monthly recovery."
         },
         {
             "action": "Stabilize financial leakage",
-            "detail": f"Coordinate {ops_silo} and {fin_silo} controls to reduce cost drift.",
-            "expected_impact": f"Estimated {recovery_pct:.1f}% recovery of cash flow plus ${abs(expenditure_delta):.0f} containment and {expenditure_reduction_pct:.1f}% expenditure stabilization."
+            "detail": f"Coordinate {ops_silo} and {fin_silo} controls to reduce cost drift and restore margins.",
+            "expected_impact": f"${abs(expenditure_delta):,.0f} expenditure containment and {expenditure_reduction_pct:.1f}% stabilization."
         }
     ]
 
@@ -1242,6 +1279,8 @@ def parse_schema_tables(schema: str) -> list:
         except ValueError:
             continue
         table_name = name_part.replace("Table:", "").strip()
+        # Strip optional [DB_KEY] prefix added by multi-database schema output.
+        table_name = re.sub(r"^\[.*?\]\s*", "", table_name).strip()
         columns = []
         if "Columns:" in columns_part:
             raw_cols = columns_part.split("Columns:", 1)[1]
@@ -1379,7 +1418,7 @@ def build_fact_sheet(sql_tables: dict) -> dict:
             continue
         date_col = None
         for key in rows[0].keys() if isinstance(rows[0], dict) else []:
-            if "date" in str(key).lower():
+            if "date" in str(key).lower() or "time" in str(key).lower() or key.lower() in ("createdat", "updatedat"):
                 date_col = key
                 break
         if not date_col:
@@ -1393,6 +1432,8 @@ def build_fact_sheet(sql_tables: dict) -> dict:
         fields = {}
         for key, value in baseline.items():
             if key == date_col:
+                continue
+            if _is_id_or_fk_column(key):
                 continue
             if not isinstance(value, (int, float)):
                 continue
@@ -1408,11 +1449,12 @@ def build_fact_sheet(sql_tables: dict) -> dict:
                 "current": current_val,
                 "delta_pct": delta_pct
             }
-        fact_sheet["tables"][table] = {
-            "baseline_date": baseline.get(date_col),
-            "current_date": current.get(date_col),
-            "fields": fields
-        }
+        if fields:  # Only add tables that have real metric fields
+            fact_sheet["tables"][table] = {
+                "baseline_date": baseline.get(date_col),
+                "current_date": current.get(date_col),
+                "fields": fields
+            }
     return fact_sheet
 
 def resolve_date_pair(fact_sheet: dict) -> tuple[str, str]:
@@ -1570,10 +1612,30 @@ def generate_plotly_from_fact_sheet(
                 "x": [fallback_start, fallback_end],
                 "y": [0, 0]
             }]
-    return {"chart_type": "line", "plotly_data": {"data": traces}}
+
+    # Build a chart title from the trace names
+    trace_names = [t.get("name", "") for t in traces if t.get("name")]
+    chart_title = " vs ".join(trace_names[:2]) if trace_names else "Metric Trend"
+    layout = {"title": chart_title}
+    return {"chart_type": "line", "plotly_data": {"data": traces, "layout": layout}}
+
+def _query_db_for_context(sql_query: str, *, use_sim: bool = False) -> str:
+    """Route a query to the simulation DB or the enterprise DBs."""
+    if use_sim:
+        return query_simulation_db(sql_query)
+    return query_enterprise_database.invoke({"sql_query": sql_query})
+
+
+def _get_schema_for_context(*, use_sim: bool = False) -> str:
+    """Return the schema from the simulation DB or the enterprise DBs."""
+    if use_sim:
+        return get_simulation_schema()
+    return get_database_schema.invoke({})
+
 
 def sql_agent_node(state: AgentState):
-    schema = get_database_schema.invoke({})
+    use_sim = bool(state.get("is_simulation", False))
+    schema = _get_schema_for_context(use_sim=use_sim)
     messages = state.get("messages") or []
     user_msg = get_message_content(messages[-1]) if messages else ""
     combined_msg = " ".join(get_message_content(msg) for msg in messages) if messages else user_msg
@@ -1608,7 +1670,7 @@ def sql_agent_node(state: AgentState):
         table_results = {}
         for table_name, columns in parse_schema_tables(schema):
             query = build_table_query(table_name, columns)
-            attempt = query_enterprise_database.invoke({"sql_query": query})
+            attempt = _query_db_for_context(query, use_sim=use_sim)
             if is_sql_error(attempt) or attempt == "Data Unavailable":
                 continue
             try:
@@ -1632,13 +1694,13 @@ def sql_agent_node(state: AgentState):
         if getattr(response, "tool_calls", None):
             tool_args = response.tool_calls[0].get("args", {})
             last_query = tool_args.get("sql_query")
-            results = query_enterprise_database.invoke(tool_args)
+            results = _query_db_for_context(last_query, use_sim=use_sim)
         else:
             # Regex fallback for 8B model reliability
             query = re.search(r"SELECT\s+.*?\s+FROM\s+.*?(;|$)", response.content, re.IGNORECASE | re.DOTALL)
             if query:
                 last_query = query.group(0).strip()
-                results = query_enterprise_database.invoke({"sql_query": last_query})
+                results = _query_db_for_context(last_query, use_sim=use_sim)
     except Exception:
         # Ensure state integrity even if the LLM call fails
         results = "No data found."
@@ -1662,7 +1724,8 @@ def sql_agent_node(state: AgentState):
     }
 
 def simulation_specialist_node(state: AgentState):
-    schema = get_database_schema.invoke({})
+    # Simulations always use the dedicated simulation database
+    schema = get_simulation_schema()
     if state.get("messages"):
         user_msg = get_message_content(state["messages"][-1])
     else:
@@ -1680,7 +1743,7 @@ def simulation_specialist_node(state: AgentState):
     table_results = {}
     for table_name, columns in parse_schema_tables(schema):
         query = build_table_query(table_name, columns)
-        attempt = query_enterprise_database.invoke({"sql_query": query})
+        attempt = query_simulation_db(query)
         if is_sql_error(attempt) or attempt == "Data Unavailable":
             continue
         try:
@@ -2739,19 +2802,151 @@ def chart_generator_node(state: AgentState):
     final_insight = state.get("final_insight")
     if isinstance(final_insight, dict):
         is_sim = state.get("is_simulation", False)
-        visuals = final_insight.get("visuals") if isinstance(final_insight.get("visuals"), dict) else None
-        plotly_data = visuals.get("plotly_data") if isinstance(visuals, dict) else None
-        traces = plotly_data.get("data") if isinstance(plotly_data, dict) else None
         if is_sim:
             visuals = build_simulation_comparison_visuals(fact_sheet, state.get("simulation_summary"))
-        elif not isinstance(traces, list) or not traces:
+        else:
+            # Always regenerate visuals from the fact_sheet so that
+            # programmatic ID-column filtering and summary-table preference
+            # are applied — never trust the LLM's raw plotly traces.
             visuals = generate_plotly_from_fact_sheet(
                 fact_sheet,
                 state.get("role"),
                 state.get("target_silos")
             )
+
+        # Rebuild headline to match the actual chart traces
+        plotly_data = visuals.get("plotly_data", {}) if isinstance(visuals, dict) else {}
+        chart_traces = plotly_data.get("data", []) if isinstance(plotly_data, dict) else []
+        content = final_insight.get("content") if isinstance(final_insight.get("content"), dict) else None
+        if content and len(chart_traces) >= 1:
+            primary_label = chart_traces[0].get("name", "")
+            secondary_label = chart_traces[1].get("name", "") if len(chart_traces) > 1 else ""
+            # Compute silos from the fact_sheet trace fields
+            primary_t, secondary_t = select_trace_fields(fact_sheet, state.get("role"), state.get("target_silos"))
+            p_silo = table_to_silo(primary_t["table_name"]) if primary_t else "Operations"
+            s_silo = table_to_silo(secondary_t["table_name"]) if secondary_t else "Accounting"
+            if primary_label and secondary_label:
+                content["headline"] = f"{primary_label} in {p_silo} Impacting {secondary_label} in {s_silo}"
+            elif primary_label:
+                content["headline"] = f"{primary_label} Decline in {p_silo}"
+            final_insight = {**final_insight, "content": content}
+
         final_insight = {**final_insight, "visuals": visuals}
     return {"final_insight": final_insight}
+
+
+def generate_silo_insights(fact_sheet: dict, user_role: str) -> list[dict]:
+    """
+    Generate one insight card per silo that has material anomalies in the fact_sheet.
+    This is a programmatic (no-LLM) pass used to produce multiple insights per agent run.
+    """
+    if not isinstance(fact_sheet, dict) or not fact_sheet.get("tables"):
+        return []
+
+    # Group candidates by silo
+    candidates = collect_metric_candidates(fact_sheet)
+    silo_groups: dict[str, list[dict]] = {}
+    for c in candidates:
+        silo = table_to_silo(c["table_name"])
+        silo_groups.setdefault(silo, []).append(c)
+
+    insights = []
+    import hashlib
+    from datetime import datetime
+
+    for silo, metrics in silo_groups.items():
+        # Only produce an insight if there's a material change (>3%)
+        material = [m for m in metrics if abs(m.get("delta_pct") or 0) >= 3.0]
+        if not material:
+            continue
+
+        ranked = sorted(material, key=lambda m: m["abs_change"], reverse=True)
+        primary = ranked[0]
+        secondary = ranked[1] if len(ranked) > 1 else None
+
+        p_label = format_metric_label(primary["field_name"])
+        p_table = primary["table_name"]
+        tables_meta = fact_sheet.get("tables", {})
+        baseline_date = tables_meta.get(p_table, {}).get("baseline_date", "")
+        current_date  = tables_meta.get(p_table, {}).get("current_date", "")
+
+        headline = f"{p_label} Decline in {silo}"
+        if secondary:
+            s_label = format_metric_label(secondary["field_name"])
+            headline = f"{p_label} Shift in {silo} Impacting {s_label}"
+
+        summary = (
+            f"{p_label} moved from {primary['baseline']:,.2f} to {primary['current']:,.2f} "
+            f"({primary['delta_pct']:+.1f}%) between {baseline_date} and {current_date}."
+        )
+        if secondary:
+            summary += (
+                f" {format_metric_label(secondary['field_name'])} also moved "
+                f"{secondary['delta_pct']:+.1f}% in the same period."
+            )
+
+        # Build Plotly traces
+        traces = []
+        x_vals = [baseline_date or "Baseline", current_date or "Current"]
+        traces.append({
+            "type": "scatter", "mode": "lines+markers",
+            "name": p_label,
+            "x": x_vals,
+            "y": [primary["baseline"], primary["current"]]
+        })
+        if secondary:
+            s_table_meta = tables_meta.get(secondary["table_name"], {})
+            sx = [s_table_meta.get("baseline_date") or x_vals[0],
+                  s_table_meta.get("current_date") or x_vals[1]]
+            traces.append({
+                "type": "scatter", "mode": "lines+markers",
+                "name": format_metric_label(secondary["field_name"]),
+                "x": sx,
+                "y": [secondary["baseline"], secondary["current"]]
+            })
+
+        urgency = min(1.0, abs(primary.get("delta_pct", 0)) / 50.0)
+        uid = hashlib.md5(f"{silo}-{p_label}-{current_date}".encode()).hexdigest()[:12]
+
+        insight = {
+            "insight_id": f"AUTO-{silo[:3].upper()}-{uid}",
+            "meta": {
+                "urgency_score": round(urgency, 2),
+                "confidence_score": 0.85,
+                "role_context": user_role,
+            },
+            "target_silos": [silo],
+            "content": {
+                "headline": headline,
+                "summary": summary,
+                "reasoning_detailed": (
+                    f"Automated anomaly scan detected a {abs(primary['delta_pct']):.1f}% shift in "
+                    f"{p_label} ({silo}) over the analysis window. "
+                    + (f"Cross-silo correlation shows {format_metric_label(secondary['field_name'])} "
+                       f"moved {secondary['delta_pct']:+.1f}% in the same period." if secondary else
+                       "No secondary silo correlation within this silo group.")
+                ),
+                "recommendations": [
+                    {
+                        "action": f"Investigate {p_label} root cause",
+                        "detail": f"Review {silo} operations between {baseline_date} and {current_date} for drivers behind the {primary['delta_pct']:+.1f}% change.",
+                        "expected_impact": f"Potential recovery of ${abs(primary['current'] - primary['baseline']):,.0f} impact."
+                    }
+                ],
+            },
+            "reasoning_chain": [
+                {"step": 1, "agent": "Auto Scanner", "thought": f"Scanned {silo} silo for material changes (>3%)."},
+                {"step": 2, "agent": "Anomaly Ranker", "thought": f"Ranked {len(material)} anomalous metrics; {p_label} is the strongest."},
+            ],
+            "visuals": {
+                "chart_type": "line",
+                "plotly_data": {"data": traces}
+            }
+        }
+        insights.append(insight)
+
+    return insights
+
     
 def security_node(state: AgentState):
     insight = state.get("final_insight")

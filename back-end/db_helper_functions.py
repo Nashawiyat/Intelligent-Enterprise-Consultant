@@ -26,7 +26,7 @@ def getLatestInsightRecordFromDB(domain: str):
     if not cursor:
         raise Exception("Cursor not initialised")
     
-    result = cursor.execute("SELECT json, savedAt FROM Insights WHERE domain = ? ORDER BY savedAt DESC LIMIT 4", (domain,))
+    result = cursor.execute("SELECT json, savedAt FROM Insights WHERE domain = ? ORDER BY savedAt DESC LIMIT 8", (domain,))
     listed = []
     for (json_result, savedAt) in result:
         listed.append(

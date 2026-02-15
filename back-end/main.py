@@ -163,18 +163,40 @@ async def getLatestInsights(domain, role_context):
         except (ValueError, TypeError):
             pass  # Timestamp parsing failed — generate new insight
 
-    # No recent insights — call LangGraph to generate a fresh one
-    proactive_inputs = {
+    # No recent insights — call agent directly so we can access the full
+    # final state (including fact_sheet) for multi-insight generation.
+    inputs = {
         "messages": [("user", "Perform a cross-domain health check. Look for anomalies.")],
         "role": role_context,
         "is_simulation": False,
         "current_silo": domain,
+        "sql_results": {},
+        "fact_sheet_history": [],
     }
 
-    insight_result = await query_langgraph(**proactive_inputs)
-    # Only record real insights, not "no_insight" status dicts
-    if isinstance(insight_result, dict) and insight_result.get("status") != "no_insight":
-        recordInsight(insight_result, domain)
+    try:
+        final_state = await enterprise_agent.ainvoke(inputs)
+        insight = final_state.get("final_insight")
+        fact_sheet = final_state.get("fact_sheet", {})
+
+        # 1. Record the main LLM-generated insight
+        main_silos: list[str] = []
+        if isinstance(insight, dict) and insight.get("status") != "no_insight" and len(insight) > 0:
+            recordInsight(insight, domain)
+            main_silos = [s.lower() for s in insight.get("target_silos", [])]
+
+        # 2. Generate additional per-silo insights from the fact_sheet
+        from agent.nodes import generate_silo_insights
+        additional = generate_silo_insights(fact_sheet, role_context)
+        for extra in additional:
+            extra_silos = [s.lower() for s in extra.get("target_silos", [])]
+            # Skip if this silo was already covered by the main insight
+            if any(s in main_silos for s in extra_silos):
+                continue
+            recordInsight(extra, domain)
+
+    except Exception as e:
+        print(f"[getLatestInsights] Error generating insights: {e}")
 
     return getLatestInsightRecordFromDB(domain)
 
