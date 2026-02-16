@@ -2,7 +2,7 @@
 
 **Unified AI Agentic System for Cross-Silo Forensic Analysis & Predictive Simulation**
 
-Developed for the **Deriv Hackathon 2026**, this AI powered software solution is not just a chatbot; it is a **System of Reasoning** that automates the investigative path usually performed by teams of business analysts.
+Developed by a team of 5 students, the AI Enterprise Consultant allowed us to proceed for the 2nd Round of the Deriv AI Hackathon 2026. This system is not just a chatbot; it is a System of Reasoning that automates the investigative paths traditionally performed by business analysts and technical leads.
 
 ## The Problem
 
