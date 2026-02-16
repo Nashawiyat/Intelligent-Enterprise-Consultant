@@ -17,7 +17,7 @@ The AI Enterprise Consultant sits on top of all enterprise silos to provide a un
 * **Predictive Simulation Sandbox:** Allows executives to run "What-If" scenarios, such as a 15% price drop, projected against current operational realities.
 * **Executive Accessibility:** Delivers high-level "Layman Analysis", translating technical jargon into business-ready insights.
 
-## 🛠️ Technical Architecture
+## Technical Architecture
 
 The AI Enterprise Consultant uses a **LangGraph-powered State Machine** to manage complex multi-turn investigations:
 
