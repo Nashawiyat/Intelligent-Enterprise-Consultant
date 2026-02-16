@@ -46,8 +46,27 @@ pip install langgraph langchain langchain-core langchain-community langchain-gro
 2. **Front-End Dashboard:** `streamlit run front-end/app.py`
 3. **Slack Integration:** `cd back-end && python slack_bridge.py`
 
+**Test Credentials (VP of Sales role):** 
+* **Username:** SalesGuy
+* **Password:** sales123 
+
 ## Key Features
 
 * **Proactive Alerts:** The system suppresses noise and only flags "material changes" exceeding a 5% threshold.
 * **Context-Aware Memory:** The agent uses thread-based persistence to remember previous turn anomalies, allowing for follow-up questions like "Who is responsible for fixing this?".
 * **Role-Based Personas:** Tailors reports for CEOs (executive synthesis) vs. Sales Managers (lead quality and pipeline health).
+
+### Home Dashboard:
+<img width="1917" height="910" alt="image" src="https://github.com/user-attachments/assets/582cace1-c51f-43eb-9a52-73f1d0340ffe" />
+
+### Insight Casual Reasoning and Recommendations:
+<img width="1236" height="692" alt="image" src="https://github.com/user-attachments/assets/026c08b5-0772-458b-8180-c4449fee9d8d" />
+
+### Simulation Sandbox (Operations example):
+<img width="1919" height="899" alt="image" src="https://github.com/user-attachments/assets/1a2e7de3-f99c-4682-b717-8b122126e457" />
+<img width="1919" height="910" alt="image" src="https://github.com/user-attachments/assets/309e9872-48b7-4311-9cb4-e35ee59b6d91" />
+
+### Slack Chat Feature:
+<img width="1341" height="389" alt="image" src="https://github.com/user-attachments/assets/79016c7d-f9fa-412b-a6b4-91cf6b64ed8b" />
+
+
