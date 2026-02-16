@@ -6,7 +6,7 @@ Developed by a team of 5 students, the AI Enterprise Consultant allowed us to pr
 
 ## The Problem
 
-Enterprise data is traditionally trapped in fragmented "silos"—Operations logs, Accounting ledgers, and CRM records often don't talk to each other. When revenue drops, executives are forced to manually correlate data across multiple dashboards to find the root cause, leading to delayed decisions and "lost opportunity" costs.
+Enterprise data is traditionally trapped in fragmented "silos". Operations logs, Accounting ledgers, and CRM records often don't talk to each other. When revenue drops, executives are forced to manually correlate data across multiple dashboards to find the root cause, leading to delayed decisions and "lost opportunity" costs.
 
 ## The Solution
 
@@ -29,7 +29,7 @@ The AI Enterprise Consultant uses a **LangGraph-powered State Machine** to manag
 Software tech-stack:
 * **Back-end:** FastAPI + SQLite
 * **Front-end:** Streamlit
-* **AI Agent:** LangGraph + Groq (Llama 3) LLM
+* **AI Agent:** LangGraph + Groq (Llama 3.3) LLM
 
 ## Getting Started
 
